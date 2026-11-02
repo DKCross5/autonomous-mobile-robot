@@ -13,9 +13,17 @@ from geometry_msgs.msg import Twist
 WHEEL_RADIUS = 0.0762
 WHEEL_BASE = 0.36
 
-# Command watchdog timeout (Deadman's switch in seconds).
-# If no key is actively pressed within this duration, the robot automatically stops.
-CMD_TIMEOUT = 0.3
+# Two-Stage Watchdog Timing (Deadman's Switch):
+# 1. FIRST_PRESS_TIMEOUT (0.70s): Bridges the OS keyboard typamatic repeat delay (~500ms)
+#    when a key is first pressed, eliminating the mid-press stop/start stutter.
+# 2. HOLD_TIMEOUT (0.25s): Once key auto-repeat is established, provides crisp,
+#    immediate stopping within 250ms when the key is released.
+FIRST_PRESS_TIMEOUT = 0.70
+HOLD_TIMEOUT = 0.25
+
+# Acceleration Limits (m/s^2 and rad/s^2) for fluid, jitter-free motion
+MAX_LIN_ACCEL = 3.0   # Reaches full speed (0.5 m/s) in ~0.16s (instant feel, zero jerk)
+MAX_ANG_ACCEL = 8.0   # Reaches full rotation (1.0 rad/s) in ~0.12s
 
 
 class AMRSimNode(Node):
@@ -33,13 +41,20 @@ class AMRSimNode(Node):
             10
         )
 
-        # Commanded velocities & timestamp for press-and-hold watchdog
+        # Commanded velocities & timing state
         self.target_linear_x = 0.0
         self.target_angular_z = 0.0
         self.last_cmd_time = 0.0
+        self.repeat_mode = False
 
     def cmd_vel_callback(self, msg: Twist):
-        # Only log when velocity values change to avoid spamming the console on key hold
+        now = time.time()
+        # If successive commands arrive within 0.20s, key repeat stream is actively held
+        if 0.0 < (now - self.last_cmd_time) < 0.20:
+            self.repeat_mode = True
+        else:
+            self.repeat_mode = False
+
         if (msg.linear.x != self.target_linear_x or msg.angular.z != self.target_angular_z):
             self.get_logger().info(
                 f"Active Command -> linear.x: {msg.linear.x:.2f} m/s, angular.z: {msg.angular.z:.2f} rad/s"
@@ -47,7 +62,7 @@ class AMRSimNode(Node):
 
         self.target_linear_x = msg.linear.x
         self.target_angular_z = msg.angular.z
-        self.last_cmd_time = time.time()
+        self.last_cmd_time = now
 
 
 def main():
@@ -70,10 +85,14 @@ def main():
 
     step_counter = 0
 
+    # Smoothed velocity states (starts at zero)
+    current_linear_x = 0.0
+    current_angular_z = 0.0
+
     print("==========================================================")
     print("MuJoCo simulation started. Launching viewer...")
     print(f"Actuator IDs: left_motor={left_motor_id}, right_motor={right_motor_id}, lidar_motor={lidar_motor_id}")
-    print(f"Deadman's Switch Watchdog: Active ({CMD_TIMEOUT}s timeout)")
+    print("Fluid Motion Control: Two-Stage Watchdog + Slew Rate Acceleration Active")
     print("Listening for velocity commands on topic: /cmd_vel")
     print("Publishing LiDAR range data on topic: /sim_lidar")
     print("==========================================================")
@@ -81,24 +100,40 @@ def main():
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
             step_start = time.time()
+            dt = model.opt.timestep
 
-            # Press-and-Hold Watchdog (Deadman's Switch):
-            # If no command received within CMD_TIMEOUT, automatically decelerate to stop
-            if time.time() - node.last_cmd_time > CMD_TIMEOUT:
+            # Two-Stage Watchdog:
+            # Uses FIRST_PRESS_TIMEOUT (0.7s) to absorb OS keyboard repeat delay,
+            # switching to HOLD_TIMEOUT (0.25s) once the key repeat stream is established.
+            timeout = HOLD_TIMEOUT if node.repeat_mode else FIRST_PRESS_TIMEOUT
+            if time.time() - node.last_cmd_time > timeout:
                 if node.target_linear_x != 0.0 or node.target_angular_z != 0.0:
-                    node.get_logger().info("Key released -> Stopping robot.")
                     node.target_linear_x = 0.0
                     node.target_angular_z = 0.0
+                    node.repeat_mode = False
+
+            # Slew-Rate Acceleration Limiting (Instant response, zero physics jerk)
+            dv = node.target_linear_x - current_linear_x
+            max_dv = MAX_LIN_ACCEL * dt
+            if dv > max_dv:
+                current_linear_x += max_dv
+            elif dv < -max_dv:
+                current_linear_x -= max_dv
+            else:
+                current_linear_x = node.target_linear_x
+
+            dw = node.target_angular_z - current_angular_z
+            max_dw = MAX_ANG_ACCEL * dt
+            if dw > max_dw:
+                current_angular_z += max_dw
+            elif dw < -max_dw:
+                current_angular_z -= max_dw
+            else:
+                current_angular_z = node.target_angular_z
 
             # Differential Drive Kinematics
-            # v_left = v - (omega * L / 2)
-            # v_right = v + (omega * L / 2)
-            # wheel_omega = v_wheel / radius
-            v = node.target_linear_x
-            w = node.target_angular_z
-
-            v_left = v - (w * WHEEL_BASE / 2.0)
-            v_right = v + (w * WHEEL_BASE / 2.0)
+            v_left = current_linear_x - (current_angular_z * WHEEL_BASE / 2.0)
+            v_right = current_linear_x + (current_angular_z * WHEEL_BASE / 2.0)
 
             omega_left = v_left / WHEEL_RADIUS
             omega_right = v_right / WHEEL_RADIUS

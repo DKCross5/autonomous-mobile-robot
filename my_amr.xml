@@ -62,8 +62,8 @@
   <actuator>
     <!-- LiDAR motor -->
     <velocity name="lidar_motor" joint="lidar_spin" kv="0.1"/>
-    <!-- Drive motors for differential drive (kv tuned for responsive velocity tracking without droop) -->
-    <velocity name="left_motor" joint="left_wheel_joint" kv="2.0"/>
-    <velocity name="right_motor" joint="right_wheel_joint" kv="2.0"/>
+    <!-- Drive motors for differential drive (kv=3.0 for responsive velocity tracking without droop) -->
+    <velocity name="left_motor" joint="left_wheel_joint" kv="3.0"/>
+    <velocity name="right_motor" joint="right_wheel_joint" kv="3.0"/>
   </actuator>
 </mujoco>
