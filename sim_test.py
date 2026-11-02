@@ -1,4 +1,5 @@
 import time
+import threading
 import mujoco
 import mujoco.viewer
 import rclpy
@@ -35,11 +36,18 @@ class AMRSimNode(Node):
     def cmd_vel_callback(self, msg: Twist):
         self.target_linear_x = msg.linear.x
         self.target_angular_z = msg.angular.z
+        self.get_logger().info(
+            f"Received /cmd_vel -> linear.x: {msg.linear.x:.2f} m/s, angular.z: {msg.angular.z:.2f} rad/s"
+        )
 
 
 def main():
     rclpy.init()
     node = AMRSimNode()
+
+    # Spin ROS 2 callbacks in a separate daemon thread so messages are never dropped or starved
+    ros_spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    ros_spin_thread.start()
 
     # Load the MuJoCo Model
     model = mujoco.MjModel.from_xml_path('my_amr.xml')
@@ -53,16 +61,16 @@ def main():
 
     step_counter = 0
 
+    print("==========================================================")
     print("MuJoCo simulation started. Launching viewer...")
+    print(f"Actuator IDs: left_motor={left_motor_id}, right_motor={right_motor_id}, lidar_motor={lidar_motor_id}")
     print("Listening for velocity commands on topic: /cmd_vel")
     print("Publishing LiDAR range data on topic: /sim_lidar")
+    print("==========================================================")
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
             step_start = time.time()
-
-            # Process incoming ROS 2 callbacks (e.g. /cmd_vel)
-            rclpy.spin_once(node, timeout_sec=0.0)
 
             # Differential Drive Kinematics
             # v_left = v - (omega * L / 2)
@@ -82,13 +90,16 @@ def main():
             data.ctrl[right_motor_id] = omega_right
             data.ctrl[lidar_motor_id] = 10.0  # Constant spin for LiDAR
 
-            # Step the physics engine & update viewer
+            # Step the physics engine (500Hz, dt = 0.002s)
             mujoco.mj_step(model, data)
-            viewer.sync()
 
             step_counter += 1
 
-            # Publish LiDAR Range message at ~10Hz (50 physics steps * 0.002s = 0.1s)
+            # Sync viewer at ~50Hz (every 10 physics steps) to prevent software rendering from freezing CPU
+            if step_counter % 10 == 0:
+                viewer.sync()
+
+            # Publish LiDAR Range message at ~10Hz (every 50 physics steps)
             if step_counter % 50 == 0:
                 distance = data.sensordata[sensor_id]
 
