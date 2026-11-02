@@ -17,13 +17,18 @@ WHEEL_BASE = 0.36
 # 1. FIRST_PRESS_TIMEOUT (0.70s): Bridges the OS keyboard typamatic repeat delay (~500ms)
 #    when a key is first pressed, eliminating the mid-press stop/start stutter.
 # 2. HOLD_TIMEOUT (0.25s): Once key auto-repeat is established, provides crisp,
-#    immediate stopping within 250ms when the key is released.
+#    immediate release detection within 250ms when the key is released.
 FIRST_PRESS_TIMEOUT = 0.70
 HOLD_TIMEOUT = 0.25
 
-# Acceleration Limits (m/s^2 and rad/s^2) for fluid, jitter-free motion
-MAX_LIN_ACCEL = 3.0   # Reaches full speed (0.5 m/s) in ~0.16s (instant feel, zero jerk)
-MAX_ANG_ACCEL = 8.0   # Reaches full rotation (1.0 rad/s) in ~0.12s
+# Realistic Motion Dynamics: Asymmetric Acceleration & Deceleration (m/s^2 and rad/s^2)
+# Snappy acceleration (2.5 m/s^2) gives immediate human response (~0.2s to full speed)
+# Controlled deceleration (1.4 m/s^2) coasts gently to a stop (~0.35s) without abrupt jerk or pitch shock
+MAX_LIN_ACCEL = 2.5
+MAX_LIN_DECEL = 1.4
+
+MAX_ANG_ACCEL = 6.0
+MAX_ANG_DECEL = 3.5
 
 
 class AMRSimNode(Node):
@@ -92,7 +97,7 @@ def main():
     print("==========================================================")
     print("MuJoCo simulation started. Launching viewer...")
     print(f"Actuator IDs: left_motor={left_motor_id}, right_motor={right_motor_id}, lidar_motor={lidar_motor_id}")
-    print("Fluid Motion Control: Two-Stage Watchdog + Slew Rate Acceleration Active")
+    print("Fluid Motion Control: Asymmetric Accel/Decel + Watchdog Active")
     print("Listening for velocity commands on topic: /cmd_vel")
     print("Publishing LiDAR range data on topic: /sim_lidar")
     print("==========================================================")
@@ -112,9 +117,11 @@ def main():
                     node.target_angular_z = 0.0
                     node.repeat_mode = False
 
-            # Slew-Rate Acceleration Limiting (Instant response, zero physics jerk)
+            # Asymmetric Linear Slew-Rate Limiter (Snappy accel, gentle realistic decel)
             dv = node.target_linear_x - current_linear_x
-            max_dv = MAX_LIN_ACCEL * dt
+            is_braking_linear = (node.target_linear_x == 0.0) or (abs(node.target_linear_x) < abs(current_linear_x))
+            rate_linear = MAX_LIN_DECEL if is_braking_linear else MAX_LIN_ACCEL
+            max_dv = rate_linear * dt
             if dv > max_dv:
                 current_linear_x += max_dv
             elif dv < -max_dv:
@@ -122,8 +129,11 @@ def main():
             else:
                 current_linear_x = node.target_linear_x
 
+            # Asymmetric Angular Slew-Rate Limiter
             dw = node.target_angular_z - current_angular_z
-            max_dw = MAX_ANG_ACCEL * dt
+            is_braking_angular = (node.target_angular_z == 0.0) or (abs(node.target_angular_z) < abs(current_angular_z))
+            rate_angular = MAX_ANG_DECEL if is_braking_angular else MAX_ANG_ACCEL
+            max_dw = rate_angular * dt
             if dw > max_dw:
                 current_angular_z += max_dw
             elif dw < -max_dw:
