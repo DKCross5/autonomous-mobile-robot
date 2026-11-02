@@ -6,8 +6,8 @@
     <light pos="0 0 3"/>
     <geom name="floor" type="plane" size="5 5 0.1" rgba=".9 .9 .9 1"/>
 
-    <!-- Obstacle (Red wall for the LiDAR to detect) -->
-    <body name="obstacle_wall" pos="1 0 0.5">
+    <!-- Obstacle (Red wall for the LiDAR to detect, placed 2.5m ahead for driving room) -->
+    <body name="obstacle_wall" pos="2.5 0 0.5">
       <geom name="wall_geom" type="box" size="0.1 1 0.5" rgba="1 0 0 1"/>
     </body>
 
@@ -22,8 +22,7 @@
       <!-- Rear Caster Mount and Caster Ball (Swivel caster on the back) -->
       <geom name="caster_mount" type="cylinder" size="0.035 0.02" pos="-0.22 0 -0.01" rgba="0.2 0.2 0.2 1"/>
       <!-- Sphere radius 0.035m, positioned at z = -0.0412 so bottom touches ground (0.0762 - 0.0412 - 0.035 = 0.0) -->
-      <!-- Very low friction emulates a freely swiveling omnidirectional caster -->
-      <geom name="caster_ball" type="sphere" size="0.035" pos="-0.22 0 -0.0412" rgba="0.6 0.6 0.6 1" friction="0.005 0.005 0.005"/>
+      <geom name="caster_ball" type="sphere" size="0.035" pos="-0.22 0 -0.0412" rgba="0.6 0.6 0.6 1"/>
 
       <!-- Left Drive Wheel (~6 inch diameter -> radius 0.0762m, width 0.04m) -->
       <body name="left_wheel" pos="0 0.18 0">
@@ -49,6 +48,11 @@
     </body>
   </worldbody>
 
+  <!-- Contacts: explicitly specify frictionless pair between caster and floor to avoid inheriting floor default friction -->
+  <contact>
+    <pair geom1="floor" geom2="caster_ball" friction="0.001 0.001 0.001 0.001 0.001"/>
+  </contact>
+
   <!-- Sensors -->
   <sensor>
     <rangefinder name="lidar_dist" site="lidar_beam"/>
@@ -58,8 +62,8 @@
   <actuator>
     <!-- LiDAR motor -->
     <velocity name="lidar_motor" joint="lidar_spin" kv="0.1"/>
-    <!-- Drive motors for differential drive (kv tuned for numerical stability with armature) -->
-    <velocity name="left_motor" joint="left_wheel_joint" kv="1.0"/>
-    <velocity name="right_motor" joint="right_wheel_joint" kv="1.0"/>
+    <!-- Drive motors for differential drive (kv tuned for responsive velocity tracking without droop) -->
+    <velocity name="left_motor" joint="left_wheel_joint" kv="2.0"/>
+    <velocity name="right_motor" joint="right_wheel_joint" kv="2.0"/>
   </actuator>
 </mujoco>

@@ -13,6 +13,10 @@ from geometry_msgs.msg import Twist
 WHEEL_RADIUS = 0.0762
 WHEEL_BASE = 0.36
 
+# Command watchdog timeout (Deadman's switch in seconds).
+# If no key is actively pressed within this duration, the robot automatically stops.
+CMD_TIMEOUT = 0.3
+
 
 class AMRSimNode(Node):
     def __init__(self):
@@ -29,16 +33,21 @@ class AMRSimNode(Node):
             10
         )
 
-        # Commanded velocities
+        # Commanded velocities & timestamp for press-and-hold watchdog
         self.target_linear_x = 0.0
         self.target_angular_z = 0.0
+        self.last_cmd_time = 0.0
 
     def cmd_vel_callback(self, msg: Twist):
+        # Only log when velocity values change to avoid spamming the console on key hold
+        if (msg.linear.x != self.target_linear_x or msg.angular.z != self.target_angular_z):
+            self.get_logger().info(
+                f"Active Command -> linear.x: {msg.linear.x:.2f} m/s, angular.z: {msg.angular.z:.2f} rad/s"
+            )
+
         self.target_linear_x = msg.linear.x
         self.target_angular_z = msg.angular.z
-        self.get_logger().info(
-            f"Received /cmd_vel -> linear.x: {msg.linear.x:.2f} m/s, angular.z: {msg.angular.z:.2f} rad/s"
-        )
+        self.last_cmd_time = time.time()
 
 
 def main():
@@ -64,6 +73,7 @@ def main():
     print("==========================================================")
     print("MuJoCo simulation started. Launching viewer...")
     print(f"Actuator IDs: left_motor={left_motor_id}, right_motor={right_motor_id}, lidar_motor={lidar_motor_id}")
+    print(f"Deadman's Switch Watchdog: Active ({CMD_TIMEOUT}s timeout)")
     print("Listening for velocity commands on topic: /cmd_vel")
     print("Publishing LiDAR range data on topic: /sim_lidar")
     print("==========================================================")
@@ -71,6 +81,14 @@ def main():
     with mujoco.viewer.launch_passive(model, data) as viewer:
         while viewer.is_running():
             step_start = time.time()
+
+            # Press-and-Hold Watchdog (Deadman's Switch):
+            # If no command received within CMD_TIMEOUT, automatically decelerate to stop
+            if time.time() - node.last_cmd_time > CMD_TIMEOUT:
+                if node.target_linear_x != 0.0 or node.target_angular_z != 0.0:
+                    node.get_logger().info("Key released -> Stopping robot.")
+                    node.target_linear_x = 0.0
+                    node.target_angular_z = 0.0
 
             # Differential Drive Kinematics
             # v_left = v - (omega * L / 2)
