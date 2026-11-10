@@ -14,21 +14,23 @@ WHEEL_RADIUS = 0.0762
 WHEEL_BASE = 0.36
 
 # Two-Stage Watchdog Timing (Deadman's Switch):
-# 1. FIRST_PRESS_TIMEOUT (0.70s): Bridges the OS keyboard typamatic repeat delay (~500ms)
+# 1. FIRST_PRESS_TIMEOUT (0.55s): Bridges the OS keyboard typamatic repeat delay (~500ms)
 #    when a key is first pressed, eliminating the mid-press stop/start stutter.
-# 2. HOLD_TIMEOUT (0.25s): Once key auto-repeat is established, provides crisp,
-#    immediate release detection within 250ms when the key is released.
-FIRST_PRESS_TIMEOUT = 0.70
-HOLD_TIMEOUT = 0.25
+# 2. HOLD_TIMEOUT (0.15s): Once key auto-repeat is established, provides crisp,
+#    immediate release detection within 150ms when the key is released.
+FIRST_PRESS_TIMEOUT = 0.55
+HOLD_TIMEOUT = 0.15
 
-# Realistic Motion Dynamics: Asymmetric Acceleration & Deceleration (m/s^2 and rad/s^2)
-# Snappy acceleration (2.5 m/s^2) gives immediate human response (~0.2s to full speed)
-# Controlled deceleration (1.4 m/s^2) coasts gently to a stop (~0.35s) without abrupt jerk or pitch shock
-MAX_LIN_ACCEL = 2.5
-MAX_LIN_DECEL = 1.4
+# Dynamic Motion Profiles (m/s^2 and rad/s^2):
+# 1. Active Steering / Direction Switching: Fast, crisp transitions (~0.10s)
+#    prevent lingering old directions and eliminate diagonal arc jitter.
+STEER_LIN_ACCEL = 4.0
+STEER_ANG_ACCEL = 10.0
 
-MAX_ANG_ACCEL = 6.0
-MAX_ANG_DECEL = 3.5
+# 2. Controlled Braking to Stop: Gentle coast-down (~0.25s) eliminates chassis
+#    nose-dive, unweighting of the rear caster, and pitch shock.
+BRAKE_LIN_DECEL = 2.0
+BRAKE_ANG_DECEL = 5.0
 
 
 class AMRSimNode(Node):
@@ -54,16 +56,15 @@ class AMRSimNode(Node):
 
     def cmd_vel_callback(self, msg: Twist):
         now = time.time()
-        # If successive commands arrive within 0.20s, key repeat stream is actively held
-        if 0.0 < (now - self.last_cmd_time) < 0.20:
+        # If successive commands arrive within 0.15s, key repeat stream is actively held
+        if 0.0 < (now - self.last_cmd_time) < 0.15:
             self.repeat_mode = True
         else:
             self.repeat_mode = False
 
-        if (msg.linear.x != self.target_linear_x or msg.angular.z != self.target_angular_z):
-            self.get_logger().info(
-                f"Active Command -> linear.x: {msg.linear.x:.2f} m/s, angular.z: {msg.angular.z:.2f} rad/s"
-            )
+        # If zero command is received (e.g. key released in teleop.py), drop repeat mode immediately
+        if msg.linear.x == 0.0 and msg.angular.z == 0.0:
+            self.repeat_mode = False
 
         self.target_linear_x = msg.linear.x
         self.target_angular_z = msg.angular.z
@@ -97,7 +98,7 @@ def main():
     print("==========================================================")
     print("MuJoCo simulation started. Launching viewer...")
     print(f"Actuator IDs: left_motor={left_motor_id}, right_motor={right_motor_id}, lidar_motor={lidar_motor_id}")
-    print("Fluid Motion Control: Asymmetric Accel/Decel + Watchdog Active")
+    print("Low-Latency Motion Control: Dual Dynamic Slew Rate Active")
     print("Listening for velocity commands on topic: /cmd_vel")
     print("Publishing LiDAR range data on topic: /sim_lidar")
     print("==========================================================")
@@ -108,8 +109,8 @@ def main():
             dt = model.opt.timestep
 
             # Two-Stage Watchdog:
-            # Uses FIRST_PRESS_TIMEOUT (0.7s) to absorb OS keyboard repeat delay,
-            # switching to HOLD_TIMEOUT (0.25s) once the key repeat stream is established.
+            # Uses FIRST_PRESS_TIMEOUT (0.55s) to absorb OS keyboard repeat delay,
+            # switching to HOLD_TIMEOUT (0.15s) once the key repeat stream is established.
             timeout = HOLD_TIMEOUT if node.repeat_mode else FIRST_PRESS_TIMEOUT
             if time.time() - node.last_cmd_time > timeout:
                 if node.target_linear_x != 0.0 or node.target_angular_z != 0.0:
@@ -117,10 +118,12 @@ def main():
                     node.target_angular_z = 0.0
                     node.repeat_mode = False
 
-            # Asymmetric Linear Slew-Rate Limiter (Snappy accel, gentle realistic decel)
+            # Linear Slew-Rate Limiter:
+            # If coming to a complete stop (target=0 and turning=0), use gentle BRAKE_LIN_DECEL.
+            # If actively steering/transitioning, use fast STEER_LIN_ACCEL to avoid lingering arcs.
             dv = node.target_linear_x - current_linear_x
-            is_braking_linear = (node.target_linear_x == 0.0) or (abs(node.target_linear_x) < abs(current_linear_x))
-            rate_linear = MAX_LIN_DECEL if is_braking_linear else MAX_LIN_ACCEL
+            is_full_stop_linear = (node.target_linear_x == 0.0 and node.target_angular_z == 0.0)
+            rate_linear = BRAKE_LIN_DECEL if is_full_stop_linear else STEER_LIN_ACCEL
             max_dv = rate_linear * dt
             if dv > max_dv:
                 current_linear_x += max_dv
@@ -129,10 +132,10 @@ def main():
             else:
                 current_linear_x = node.target_linear_x
 
-            # Asymmetric Angular Slew-Rate Limiter
+            # Angular Slew-Rate Limiter:
             dw = node.target_angular_z - current_angular_z
-            is_braking_angular = (node.target_angular_z == 0.0) or (abs(node.target_angular_z) < abs(current_angular_z))
-            rate_angular = MAX_ANG_DECEL if is_braking_angular else MAX_ANG_ACCEL
+            is_full_stop_angular = (node.target_linear_x == 0.0 and node.target_angular_z == 0.0)
+            rate_angular = BRAKE_ANG_DECEL if is_full_stop_angular else STEER_ANG_ACCEL
             max_dw = rate_angular * dt
             if dw > max_dw:
                 current_angular_z += max_dw

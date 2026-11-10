@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
-import select
+import os
+import fcntl
 import termios
 import tty
 import time
@@ -10,11 +11,11 @@ from geometry_msgs.msg import Twist
 
 BANNER = """
 ==============================================================
-            AMR Interactive Keyboard Teleop Node
+         AMR High-Performance Real-Time Teleop Node
 ==============================================================
 Drive Controls (Press & Hold, Multi-Key Combinations Supported):
 --------------------------------------------------------------
-  Combined Chording:
+  Multi-Key Diagonal Arcs:
     Forward + Left   (W+A or Up+Left or U)    : Arc Forward-Left  (↖)
     Forward + Right  (W+D or Up+Right or O)   : Arc Forward-Right (↗)
     Reverse + Left   (S+A or Down+Left or M)  : Arc Reverse-Left  (↙)
@@ -34,9 +35,12 @@ Drive Controls (Press & Hold, Multi-Key Combinations Supported):
 ==============================================================
 """
 
-# Key persistence window (seconds): if a key event was seen within this window,
-# it is considered actively held down by the user.
-KEY_HOLD_WINDOW = 0.20
+# Low-latency key timing constants:
+# - STREAM_WINDOW (0.09s): When a key is streaming repeat characters (~30Hz),
+#   it expires within 90ms of release for near-instant release detection.
+# - INITIAL_WINDOW (0.50s): Bridges the OS keyboard typamatic pause on the first tap.
+STREAM_WINDOW = 0.09
+INITIAL_WINDOW = 0.50
 
 
 class TeleopNode(Node):
@@ -47,135 +51,173 @@ class TeleopNode(Node):
         self.linear_speed = 0.5   # m/s
         self.angular_speed = 1.0  # rad/s
 
-        # Key activity timestamps
-        self.key_press_time = {
-            'forward': 0.0,
-            'backward': 0.0,
-            'left': 0.0,
-            'right': 0.0
-        }
+        # Direction tracking: last press timestamp & repeat count
+        self.press_time = {'forward': 0.0, 'backward': 0.0, 'left': 0.0, 'right': 0.0}
+        self.press_count = {'forward': 0, 'backward': 0, 'left': 0, 'right': 0}
 
         self.last_published_linear = 0.0
         self.last_published_angular = 0.0
 
 
-def read_key(settings, timeout=0.03):
-    """Non-blocking single character or escape sequence reader."""
-    rlist, _, _ = select.select([sys.stdin], [], [], timeout)
-    if not rlist:
-        return None
+def drain_all_keys(fd):
+    """
+    Reads and drains ALL pending bytes from the non-blocking stdin buffer in a single call.
+    Completely eliminates character queue backlog and input lag.
+    """
+    try:
+        raw = os.read(fd, 1024)
+    except BlockingIOError:
+        return []
 
-    ch = sys.stdin.read(1)
-    # Check for escape sequences (e.g. arrow keys: \x1b[A, \x1b[B, etc.)
-    if ch == '\x1b':
-        # Check if more characters follow in the escape sequence
-        rlist, _, _ = select.select([sys.stdin], [], [], 0.02)
-        if rlist:
-            seq = sys.stdin.read(2)
-            if seq == '[A':
-                return 'UP'
-            elif seq == '[B':
-                return 'DOWN'
-            elif seq == '[C':
-                return 'RIGHT'
-            elif seq == '[D':
-                return 'LEFT'
-        return 'ESC'
-    return ch.lower()
+    if not raw:
+        return []
+
+    keys = []
+    i = 0
+    while i < len(raw):
+        # Parse ANSI escape sequences for Arrow keys
+        if raw[i:i+3] == b'\x1b[A':
+            keys.append('UP'); i += 3
+        elif raw[i:i+3] == b'\x1b[B':
+            keys.append('DOWN'); i += 3
+        elif raw[i:i+3] == b'\x1b[C':
+            keys.append('RIGHT'); i += 3
+        elif raw[i:i+3] == b'\x1b[D':
+            keys.append('LEFT'); i += 3
+        elif raw[i:i+1] == b'\x1b':
+            i += 1
+        else:
+            try:
+                keys.append(chr(raw[i]).lower())
+            except ValueError:
+                pass
+            i += 1
+
+    return keys
 
 
 def main():
     rclpy.init()
     node = TeleopNode()
 
-    # Save original terminal settings
-    orig_settings = termios.tcgetattr(sys.stdin)
-    tty.setcbreak(sys.stdin.fileno())
+    fd = sys.stdin.fileno()
+    orig_termios = termios.tcgetattr(fd)
+    orig_fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+
+    # Set terminal to raw/cbreak and non-blocking I/O
+    tty.setcbreak(fd)
+    fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl | os.O_NONBLOCK)
 
     print(BANNER)
     print(f"Current Speeds -> Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s\n")
 
     try:
         while rclpy.ok():
-            key = read_key(orig_settings, timeout=0.03)
             now = time.time()
+            keys = drain_all_keys(fd)
 
-            if key == '\x03':  # Ctrl+C
-                break
+            for key in keys:
+                if key == '\x03':  # Ctrl+C
+                    raise KeyboardInterrupt
 
-            # Immediate Emergency Stop
-            if key in (' ', 'k'):
-                for direction in node.key_press_time:
-                    node.key_press_time[direction] = 0.0
+                # Immediate Stop
+                if key in (' ', 'k'):
+                    for d in node.press_time:
+                        node.press_time[d] = 0.0
+                        node.press_count[d] = 0
 
-            # Forward Keys
-            elif key in ('w', 'i', 'UP'):
-                node.key_press_time['forward'] = now
-            # Backward Keys
-            elif key in ('s', ',', 'DOWN'):
-                node.key_press_time['backward'] = now
-            # Left Keys
-            elif key in ('a', 'j', 'LEFT'):
-                node.key_press_time['left'] = now
-            # Right Keys
-            elif key in ('d', 'l', 'RIGHT'):
-                node.key_press_time['right'] = now
+                # Forward (Cancels opposite direction immediately)
+                elif key in ('w', 'i', 'UP'):
+                    node.press_count['forward'] = node.press_count['forward'] + 1 if (now - node.press_time['forward'] < 0.2) else 1
+                    node.press_time['forward'] = now
+                    node.press_time['backward'] = 0.0
+                    node.press_count['backward'] = 0
 
-            # Legacy Diagonal Shortcuts (U, O, M, .)
-            elif key == 'u':
-                node.key_press_time['forward'] = now
-                node.key_press_time['left'] = now
-            elif key == 'o':
-                node.key_press_time['forward'] = now
-                node.key_press_time['right'] = now
-            elif key == 'm':
-                node.key_press_time['backward'] = now
-                node.key_press_time['left'] = now
-            elif key == '.':
-                node.key_press_time['backward'] = now
-                node.key_press_time['right'] = now
+                # Backward (Cancels opposite direction immediately)
+                elif key in ('s', ',', 'DOWN'):
+                    node.press_count['backward'] = node.press_count['backward'] + 1 if (now - node.press_time['backward'] < 0.2) else 1
+                    node.press_time['backward'] = now
+                    node.press_time['forward'] = 0.0
+                    node.press_count['forward'] = 0
 
-            # Speed Tuning
-            elif key == 'e':
-                node.linear_speed = min(2.0, node.linear_speed * 1.1)
-                print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="")
-            elif key == 'q':
-                node.linear_speed = max(0.1, node.linear_speed * 0.9)
-                print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="")
-            elif key == 'r':
-                node.angular_speed = min(3.0, node.angular_speed * 1.1)
-                print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="")
-            elif key == 'f':
-                node.angular_speed = max(0.2, node.angular_speed * 0.9)
-                print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="")
+                # Left (Cancels opposite direction immediately)
+                elif key in ('a', 'j', 'LEFT'):
+                    node.press_count['left'] = node.press_count['left'] + 1 if (now - node.press_time['left'] < 0.2) else 1
+                    node.press_time['left'] = now
+                    node.press_time['right'] = 0.0
+                    node.press_count['right'] = 0
 
-            # Evaluate active held directions based on recent keypress events
-            fwd_active = (now - node.key_press_time['forward']) < KEY_HOLD_WINDOW
-            bwd_active = (now - node.key_press_time['backward']) < KEY_HOLD_WINDOW
-            left_active = (now - node.key_press_time['left']) < KEY_HOLD_WINDOW
-            right_active = (now - node.key_press_time['right']) < KEY_HOLD_WINDOW
+                # Right (Cancels opposite direction immediately)
+                elif key in ('d', 'l', 'RIGHT'):
+                    node.press_count['right'] = node.press_count['right'] + 1 if (now - node.press_time['right'] < 0.2) else 1
+                    node.press_time['right'] = now
+                    node.press_time['left'] = 0.0
+                    node.press_count['left'] = 0
 
-            # Calculate resultant commanded linear velocity
+                # Legacy Diagonal Shortcuts
+                elif key == 'u':  # Forward-Left
+                    node.press_time['forward'] = now; node.press_count['forward'] = 2
+                    node.press_time['left'] = now;    node.press_count['left'] = 2
+                    node.press_time['backward'] = 0.0; node.press_time['right'] = 0.0
+                elif key == 'o':  # Forward-Right
+                    node.press_time['forward'] = now; node.press_count['forward'] = 2
+                    node.press_time['right'] = now;   node.press_count['right'] = 2
+                    node.press_time['backward'] = 0.0; node.press_time['left'] = 0.0
+                elif key == 'm':  # Reverse-Left
+                    node.press_time['backward'] = now; node.press_count['backward'] = 2
+                    node.press_time['left'] = now;     node.press_count['left'] = 2
+                    node.press_time['forward'] = 0.0;  node.press_time['right'] = 0.0
+                elif key == '.':  # Reverse-Right
+                    node.press_time['backward'] = now; node.press_count['backward'] = 2
+                    node.press_time['right'] = now;    node.press_count['right'] = 2
+                    node.press_time['forward'] = 0.0;  node.press_time['left'] = 0.0
+
+                # Speed Adjustments
+                elif key == 'e':
+                    node.linear_speed = min(2.0, node.linear_speed * 1.1)
+                    print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="", flush=True)
+                elif key == 'q':
+                    node.linear_speed = max(0.1, node.linear_speed * 0.9)
+                    print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="", flush=True)
+                elif key == 'r':
+                    node.angular_speed = min(3.0, node.angular_speed * 1.1)
+                    print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="", flush=True)
+                elif key == 'f':
+                    node.angular_speed = max(0.2, node.angular_speed * 0.9)
+                    print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="", flush=True)
+
+            # Evaluate active directions:
+            # - If repeating (>1 press in succession), window is 90ms for instant release.
+            # - If initial press, window is 500ms to absorb OS typamatic gap.
+            def is_active(direction):
+                window = STREAM_WINDOW if node.press_count[direction] > 1 else INITIAL_WINDOW
+                return (now - node.press_time[direction]) < window
+
+            fwd_active = is_active('forward')
+            bwd_active = is_active('backward')
+            left_active = is_active('left')
+            right_active = is_active('right')
+
+            # Calculate resultant commanded velocities
             target_linear = 0.0
             if fwd_active and not bwd_active:
                 target_linear = node.linear_speed
             elif bwd_active and not fwd_active:
                 target_linear = -node.linear_speed
 
-            # Calculate resultant commanded angular velocity
             target_angular = 0.0
             if left_active and not right_active:
                 target_angular = node.angular_speed
             elif right_active and not left_active:
                 target_angular = -node.angular_speed
 
-            # Publish Twist message at ~30Hz
+            # Publish Twist message at 50Hz
             twist = Twist()
             twist.linear.x = float(target_linear)
             twist.angular.z = float(target_angular)
             node.pub.publish(twist)
 
-            # Informative live status line when state changes
+            # Update live HUD on state change
             if (target_linear != node.last_published_linear or target_angular != node.last_published_angular):
                 status_str = "STOPPED ■"
                 if target_linear > 0 and target_angular > 0:
@@ -200,15 +242,20 @@ def main():
             node.last_published_linear = target_linear
             node.last_published_angular = target_angular
 
-            time.sleep(0.033)
+            time.sleep(0.02)  # 50 Hz loop
 
-    except Exception as e:
-        print(f"\nError in teleop: {e}")
+    except (KeyboardInterrupt, Exception):
+        pass
     finally:
-        # Stop robot before exiting
-        stop_twist = Twist()
-        node.pub.publish(stop_twist)
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, orig_settings)
+        # Publish zero velocity on exit to stop robot safely
+        try:
+            stop_twist = Twist()
+            node.pub.publish(stop_twist)
+        except Exception:
+            pass
+        # Restore terminal flags & settings
+        fcntl.fcntl(fd, fcntl.F_SETFL, orig_fl)
+        termios.tcsetattr(fd, termios.TCSADRAIN, orig_termios)
         print("\nRestored terminal and cleanly stopped teleop node.")
         node.destroy_node()
         rclpy.shutdown()
