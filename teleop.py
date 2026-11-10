@@ -2,6 +2,7 @@
 import sys
 import os
 import time
+import math
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -9,12 +10,24 @@ from tkinter import ttk
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 
 
 class TeleopNode(Node):
-    def __init__(self):
+    def __init__(self, odom_callback=None):
         super().__init__('amr_teleop_node')
         self.pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self.odom_callback = odom_callback
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            'odom',
+            self._handle_odom,
+            10
+        )
+
+    def _handle_odom(self, msg):
+        if self.odom_callback:
+            self.odom_callback(msg)
 
 
 class AMRTeleopApp:
@@ -22,8 +35,8 @@ class AMRTeleopApp:
         self.root = root
         self.node = node
 
-        self.root.title("AMR Drive Control Pad")
-        self.root.geometry("420x420")
+        self.root.title("AMR Drive Control Pad & Telemetry")
+        self.root.geometry("440x490")
         self.root.configure(bg="#1E1E2E")
         self.root.resizable(False, False)
 
@@ -37,11 +50,45 @@ class AMRTeleopApp:
         self.last_published_linear = 0.0
         self.last_published_angular = 0.0
 
+        # Live Odometry Telemetry
+        self.pos_x = 0.0
+        self.pos_y = 0.0
+        self.yaw_deg = 0.0
+        self.current_speed = 0.0
+        self.total_distance = 0.0
+        self.last_odom_x = None
+        self.last_odom_y = None
+
         self._build_ui()
         self._bind_keys()
 
         # Start 50 Hz control loop (every 20 ms)
         self.root.after(20, self._control_loop)
+
+    def on_odom_received(self, msg: Odometry):
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        w = msg.pose.pose.orientation.w
+        qx = msg.pose.pose.orientation.x
+        qy = msg.pose.pose.orientation.y
+        qz = msg.pose.pose.orientation.z
+
+        yaw_rad = math.atan2(2.0 * (w * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        self.yaw_deg = math.degrees(yaw_rad)
+
+        if self.last_odom_x is not None:
+            step_dist = math.hypot(x - self.last_odom_x, y - self.last_odom_y)
+            # Only accumulate realistic motion (> 1mm)
+            if step_dist > 0.001:
+                self.total_distance += step_dist
+
+        self.last_odom_x = x
+        self.last_odom_y = y
+        self.pos_x = x
+        self.pos_y = y
+
+        vx = msg.twist.twist.linear.x
+        self.current_speed = abs(vx)
 
     def _normalize_key(self, event):
         k = event.char.lower() if event.char else ''
@@ -133,6 +180,9 @@ class AMRTeleopApp:
             self.last_published_linear = vx
             self.last_published_angular = wz
 
+        # Update Live Odometry Telemetry in HUD
+        self._update_odom_display()
+
         # Schedule next tick
         self.root.after(20, self._control_loop)
 
@@ -174,11 +224,19 @@ class AMRTeleopApp:
         if active_key and active_key in self.dir_buttons:
             self.dir_buttons[active_key].configure(bg="#89B4FA", fg="#11111B")
 
-        self.status_label.configure(text=f"Status: {status_text}\nLinear: {vx:+.2f} m/s | Turn: {wz:+.2f} rad/s")
+        self.status_label.configure(
+            text=f"Status: {status_text} (vx={vx:+.2f} m/s, wz={wz:+.2f} rad/s)"
+        )
+
+    def _update_odom_display(self):
+        self.odom_label.configure(
+            text=f"📍 Pose: X: {self.pos_x:+.2f} m | Y: {self.pos_y:+.2f} m | Yaw: {self.yaw_deg:+.1f}°\n"
+                 f"⚡ Speed: {self.current_speed:.2f} m/s | 🏁 Odometer: {self.total_distance:.2f} m"
+        )
 
     def _update_speed_label(self):
         self.speed_label.configure(
-            text=f"Linear Target: {self.linear_speed:.2f} m/s (E/Q)\nTurn Target: {self.angular_speed:.2f} rad/s (R/F)"
+            text=f"Linear Target: {self.linear_speed:.2f} m/s (E/Q) | Turn Target: {self.angular_speed:.2f} rad/s (R/F)"
         )
 
     def _bind_keys(self):
@@ -187,7 +245,6 @@ class AMRTeleopApp:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self):
-        # Stop robot safely on window close
         try:
             stop_twist = Twist()
             self.node.pub.publish(stop_twist)
@@ -199,25 +256,25 @@ class AMRTeleopApp:
         # Title Header
         title = tk.Label(
             self.root,
-            text="AMR Drive Teleoperation",
+            text="AMR Drive Teleoperation & HUD",
             font=("Helvetica", 14, "bold"),
             bg="#1E1E2E",
             fg="#89B4FA"
         )
-        title.pack(pady=(12, 4))
+        title.pack(pady=(10, 2))
 
         subtitle = tk.Label(
             self.root,
-            text="Keep this window focused. Multi-key combinations supported:\n(e.g., Hold W, tap/hold A/D to steer fluidly)",
+            text="Keep focused. Multi-key combinations (W/A/S/D & Arrows) supported:",
             font=("Helvetica", 9),
             bg="#1E1E2E",
             fg="#A6ADC8"
         )
-        subtitle.pack(pady=(0, 10))
+        subtitle.pack(pady=(0, 8))
 
         # 3x3 Directional Pad
         pad_frame = tk.Frame(self.root, bg="#1E1E2E")
-        pad_frame.pack(pady=4)
+        pad_frame.pack(pady=2)
 
         btn_font = ("Helvetica", 13, "bold")
         btn_w, btn_h = 5, 2
@@ -249,45 +306,79 @@ class AMRTeleopApp:
         # Status Label
         self.status_label = tk.Label(
             self.root,
-            text="Status: STOPPED ■\nLinear: +0.00 m/s | Turn: +0.00 rad/s",
+            text="Status: STOPPED ■ (vx=+0.00 m/s, wz=+0.00 rad/s)",
             font=("Courier", 10, "bold"),
             bg="#1E1E2E",
             fg="#A6E3A1",
             justify="center"
         )
-        self.status_label.pack(pady=8)
+        self.status_label.pack(pady=(8, 4))
+
+        # Live Odometry Telemetry Card
+        odom_card = tk.LabelFrame(
+            self.root,
+            text=" Live Odometry Telemetry (/odom) ",
+            font=("Helvetica", 9, "bold"),
+            bg="#181825",
+            fg="#CBA6F7",
+            padx=10,
+            pady=6,
+            relief="groove"
+        )
+        odom_card.pack(fill="x", padx=16, pady=6)
+
+        self.odom_label = tk.Label(
+            odom_card,
+            text="📍 Pose: X: +0.00 m | Y: +0.00 m | Yaw: +0.0°\n⚡ Speed: 0.00 m/s | 🏁 Odometer: 0.00 m",
+            font=("Courier", 10),
+            bg="#181825",
+            fg="#F5C2E7",
+            justify="center"
+        )
+        self.odom_label.pack()
 
         # Speed Setting Info
         self.speed_label = tk.Label(
             self.root,
-            text=f"Linear Target: {self.linear_speed:.2f} m/s (E/Q)\nTurn Target: {self.angular_speed:.2f} rad/s (R/F)",
+            text=f"Linear Target: {self.linear_speed:.2f} m/s (E/Q) | Turn Target: {self.angular_speed:.2f} rad/s (R/F)",
             font=("Helvetica", 9),
             bg="#1E1E2E",
             fg="#BAC2DE",
             justify="center"
         )
-        self.speed_label.pack(pady=(0, 6))
+        self.speed_label.pack(pady=(4, 6))
 
 
 def main():
     rclpy.init()
-    node = TeleopNode()
+
+    # Pre-declare node and app references
+    app_ref = None
+
+    def odom_bridge(msg):
+        if app_ref:
+            app_ref.on_odom_received(msg)
+
+    node = TeleopNode(odom_callback=odom_bridge)
 
     # Spin ROS 2 in a background daemon thread
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
     print("==============================================================")
-    print("Launching AMR Drive Control Pad GUI...")
-    print("Controls (Keep the GUI window focused):")
-    print("  Drive: W / A / S / D  or  Arrow Keys")
-    print("  Chords: Hold W, add/release A or D to steer dynamically!")
-    print("  Speed: E/Q (Linear speed), R/F (Turn speed)")
-    print("  Stop : Spacebar or release all keys")
+    print("Launching AMR Drive Control Pad & Telemetry HUD...")
+    print("Features:")
+    print("  - Drive Controls: W / A / S / D  or  Arrow Keys")
+    print("  - Dynamic Chording: Hold W, tap/hold A/D to steer dynamically")
+    print("  - Live Odometry Display: Coordinates, Heading & Odometer")
+    print("  - Speed Tuning: E/Q (Linear speed), R/F (Turn speed)")
+    print("  - Stop : Spacebar or release all keys")
     print("==============================================================")
 
     root = tk.Tk()
     app = AMRTeleopApp(root, node)
+    app_ref = app
+
     try:
         root.mainloop()
     except KeyboardInterrupt:
