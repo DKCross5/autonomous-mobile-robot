@@ -11,22 +11,27 @@ from geometry_msgs.msg import Twist
 
 BANNER = """
 ==============================================================
-         AMR High-Performance Real-Time Teleop Node
+         AMR Dual-Axis Real-Time Teleop Node
 ==============================================================
-Drive Controls (Press & Hold, Multi-Key Combinations Supported):
+Drive Controls:
 --------------------------------------------------------------
-  Multi-Key Diagonal Arcs:
-    Forward + Left   (W+A or Up+Left or U)    : Arc Forward-Left  (↖)
-    Forward + Right  (W+D or Up+Right or O)   : Arc Forward-Right (↗)
-    Reverse + Left   (S+A or Down+Left or M)  : Arc Reverse-Left  (↙)
-    Reverse + Right  (S+D or Down+Right or .) : Arc Reverse-Right (↘)
+  Multi-Key Steering (Add turning while driving):
+    - Hold Forward (W / Up), then add Left (A) or Right (D)
+      -> Smoothly transitions into Forward-Left or Forward-Right arc!
+    - Hold Reverse (S / Down), then add Left (A) or Right (D)
+      -> Smoothly transitions into Reverse-Left or Reverse-Right arc!
+    - Tap Forward (W) again while arcing -> Straightens back out forward!
 
-  Single Directions:
+  Single Directional Controls:
     Forward : W  or  Up Arrow    or  I
     Reverse : S  or  Down Arrow  or  ,
     Left    : A  or  Left Arrow  or  J
     Right   : D  or  Right Arrow or  L
-    Stop    : Spacebar or K
+    Stop    : Spacebar or K (or release all keys)
+
+  Direct Diagonal Shortcuts:
+    U : Forward-Left  (↖)       O : Forward-Right (↗)
+    M : Reverse-Left  (↙)       . : Reverse-Right (↘)
 
   Speed Adjustments:
     E / Q : Increase / Decrease Linear Speed (by 10%)
@@ -35,12 +40,8 @@ Drive Controls (Press & Hold, Multi-Key Combinations Supported):
 ==============================================================
 """
 
-# Low-latency key timing constants:
-# - STREAM_WINDOW (0.09s): When a key is streaming repeat characters (~30Hz),
-#   it expires within 90ms of release for near-instant release detection.
-# - INITIAL_WINDOW (0.50s): Bridges the OS keyboard typamatic pause on the first tap.
-STREAM_WINDOW = 0.09
-INITIAL_WINDOW = 0.50
+FIRST_PRESS_TIMEOUT = 0.55
+STREAM_REPEAT_TIMEOUT = 0.18
 
 
 class TeleopNode(Node):
@@ -51,9 +52,14 @@ class TeleopNode(Node):
         self.linear_speed = 0.5   # m/s
         self.angular_speed = 1.0  # rad/s
 
-        # Direction tracking: last press timestamp & repeat count
-        self.press_time = {'forward': 0.0, 'backward': 0.0, 'left': 0.0, 'right': 0.0}
-        self.press_count = {'forward': 0, 'backward': 0, 'left': 0, 'right': 0}
+        # Independent Dual-Axis State:
+        # longitudinal: +1 (Forward), -1 (Reverse), 0 (Neutral)
+        # lateral:      +1 (Turn Left), -1 (Turn Right), 0 (Straight)
+        self.longitudinal = 0
+        self.lateral = 0
+
+        self.last_key_time = 0.0
+        self.is_repeating = False
 
         self.last_published_linear = 0.0
         self.last_published_angular = 0.0
@@ -61,8 +67,8 @@ class TeleopNode(Node):
 
 def drain_all_keys(fd):
     """
-    Reads and drains ALL pending bytes from the non-blocking stdin buffer in a single call.
-    Completely eliminates character queue backlog and input lag.
+    Reads and flushes ALL pending bytes from non-blocking stdin.
+    Eliminates buffer backlog and provides sub-millisecond key detection.
     """
     try:
         raw = os.read(fd, 1024)
@@ -75,7 +81,6 @@ def drain_all_keys(fd):
     keys = []
     i = 0
     while i < len(raw):
-        # Parse ANSI escape sequences for Arrow keys
         if raw[i:i+3] == b'\x1b[A':
             keys.append('UP'); i += 3
         elif raw[i:i+3] == b'\x1b[B':
@@ -120,59 +125,58 @@ def main():
                 if key == '\x03':  # Ctrl+C
                     raise KeyboardInterrupt
 
-                # Immediate Stop
+                # Track repeating stream timing
+                if 0.0 < (now - node.last_key_time) < 0.15:
+                    node.is_repeating = True
+                else:
+                    node.is_repeating = False
+
+                node.last_key_time = now
+
+                # Emergency / Full Stop
                 if key in (' ', 'k'):
-                    for d in node.press_time:
-                        node.press_time[d] = 0.0
-                        node.press_count[d] = 0
+                    node.longitudinal = 0
+                    node.lateral = 0
+                    node.is_repeating = False
 
-                # Forward (Cancels opposite direction immediately)
+                # Longitudinal: Forward
                 elif key in ('w', 'i', 'UP'):
-                    node.press_count['forward'] = node.press_count['forward'] + 1 if (now - node.press_time['forward'] < 0.2) else 1
-                    node.press_time['forward'] = now
-                    node.press_time['backward'] = 0.0
-                    node.press_count['backward'] = 0
+                    # If already moving forward and user re-presses W, straighten out lateral steering
+                    if node.longitudinal == 1 and node.lateral != 0:
+                        node.lateral = 0
+                    else:
+                        node.longitudinal = 1
 
-                # Backward (Cancels opposite direction immediately)
+                # Longitudinal: Backward
                 elif key in ('s', ',', 'DOWN'):
-                    node.press_count['backward'] = node.press_count['backward'] + 1 if (now - node.press_time['backward'] < 0.2) else 1
-                    node.press_time['backward'] = now
-                    node.press_time['forward'] = 0.0
-                    node.press_count['forward'] = 0
+                    if node.longitudinal == -1 and node.lateral != 0:
+                        node.lateral = 0
+                    else:
+                        node.longitudinal = -1
 
-                # Left (Cancels opposite direction immediately)
+                # Lateral: Left
                 elif key in ('a', 'j', 'LEFT'):
-                    node.press_count['left'] = node.press_count['left'] + 1 if (now - node.press_time['left'] < 0.2) else 1
-                    node.press_time['left'] = now
-                    node.press_time['right'] = 0.0
-                    node.press_count['right'] = 0
+                    node.lateral = 1
 
-                # Right (Cancels opposite direction immediately)
+                # Lateral: Right
                 elif key in ('d', 'l', 'RIGHT'):
-                    node.press_count['right'] = node.press_count['right'] + 1 if (now - node.press_time['right'] < 0.2) else 1
-                    node.press_time['right'] = now
-                    node.press_time['left'] = 0.0
-                    node.press_count['left'] = 0
+                    node.lateral = -1
 
-                # Legacy Diagonal Shortcuts
+                # Direct Diagonal Shortcuts
                 elif key == 'u':  # Forward-Left
-                    node.press_time['forward'] = now; node.press_count['forward'] = 2
-                    node.press_time['left'] = now;    node.press_count['left'] = 2
-                    node.press_time['backward'] = 0.0; node.press_time['right'] = 0.0
+                    node.longitudinal = 1
+                    node.lateral = 1
                 elif key == 'o':  # Forward-Right
-                    node.press_time['forward'] = now; node.press_count['forward'] = 2
-                    node.press_time['right'] = now;   node.press_count['right'] = 2
-                    node.press_time['backward'] = 0.0; node.press_time['left'] = 0.0
+                    node.longitudinal = 1
+                    node.lateral = -1
                 elif key == 'm':  # Reverse-Left
-                    node.press_time['backward'] = now; node.press_count['backward'] = 2
-                    node.press_time['left'] = now;     node.press_count['left'] = 2
-                    node.press_time['forward'] = 0.0;  node.press_time['right'] = 0.0
+                    node.longitudinal = -1
+                    node.lateral = 1
                 elif key == '.':  # Reverse-Right
-                    node.press_time['backward'] = now; node.press_count['backward'] = 2
-                    node.press_time['right'] = now;    node.press_count['right'] = 2
-                    node.press_time['forward'] = 0.0;  node.press_time['left'] = 0.0
+                    node.longitudinal = -1
+                    node.lateral = -1
 
-                # Speed Adjustments
+                # Speed Tuning
                 elif key == 'e':
                     node.linear_speed = min(2.0, node.linear_speed * 1.1)
                     print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="", flush=True)
@@ -186,35 +190,21 @@ def main():
                     node.angular_speed = max(0.2, node.angular_speed * 0.9)
                     print(f"\r[Speed] Linear: {node.linear_speed:.2f} m/s | Angular: {node.angular_speed:.2f} rad/s    ", end="", flush=True)
 
-            # Evaluate active directions:
-            # - If repeating (>1 press in succession), window is 90ms for instant release.
-            # - If initial press, window is 500ms to absorb OS typamatic gap.
-            def is_active(direction):
-                window = STREAM_WINDOW if node.press_count[direction] > 1 else INITIAL_WINDOW
-                return (now - node.press_time[direction]) < window
+            # Watchdog: If no character is received within the release timeout, zero both axes
+            timeout = STREAM_REPEAT_TIMEOUT if node.is_repeating else FIRST_PRESS_TIMEOUT
+            if (now - node.last_key_time) > timeout:
+                node.longitudinal = 0
+                node.lateral = 0
+                node.is_repeating = False
 
-            fwd_active = is_active('forward')
-            bwd_active = is_active('backward')
-            left_active = is_active('left')
-            right_active = is_active('right')
-
-            # Calculate resultant commanded velocities
-            target_linear = 0.0
-            if fwd_active and not bwd_active:
-                target_linear = node.linear_speed
-            elif bwd_active and not fwd_active:
-                target_linear = -node.linear_speed
-
-            target_angular = 0.0
-            if left_active and not right_active:
-                target_angular = node.angular_speed
-            elif right_active and not left_active:
-                target_angular = -node.angular_speed
+            # Compute velocities from dual-axis state
+            target_linear = float(node.longitudinal * node.linear_speed)
+            target_angular = float(node.lateral * node.angular_speed)
 
             # Publish Twist message at 50Hz
             twist = Twist()
-            twist.linear.x = float(target_linear)
-            twist.angular.z = float(target_angular)
+            twist.linear.x = target_linear
+            twist.angular.z = target_angular
             node.pub.publish(twist)
 
             # Update live HUD on state change
