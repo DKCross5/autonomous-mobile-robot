@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "🚀 Launch All Robot Terminals (Parallel Panels)",
+      "label": "🚀 Launch All Robot Terminals (Parallel Interactive Panels)",
       "dependsOn": [
         "1) Simulation Node",
         "2) Interactive Teleop & HUD",
@@ -28,7 +28,7 @@
     {
       "label": "1) Simulation Node",
       "type": "shell",
-      "command": "bash -c 'source /opt/ros/humble/setup.bash && python3 /home/andy/AMR/sim_test.py'",
+      "command": "bash -c 'source /opt/ros/humble/setup.bash && python3 /home/andy/AMR/sim_test.py; exec bash'",
       "presentation": {
         "panel": "dedicated",
         "reveal": "always",
@@ -40,7 +40,7 @@
     {
       "label": "2) Interactive Teleop & HUD",
       "type": "shell",
-      "command": "bash -c 'source /opt/ros/humble/setup.bash && python3 /home/andy/AMR/teleop.py'",
+      "command": "bash -c 'source /opt/ros/humble/setup.bash && python3 /home/andy/AMR/teleop.py; exec bash'",
       "presentation": {
         "panel": "dedicated",
         "reveal": "always",
@@ -52,11 +52,23 @@
     {
       "label": "3) RViz2 Visualization",
       "type": "shell",
-      "command": "bash /home/andy/AMR/launch_rviz.sh",
+      "command": "bash -c '/home/andy/AMR/launch_rviz.sh; exec bash'",
       "presentation": {
         "panel": "dedicated",
         "reveal": "always",
         "focus": false,
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "📟 Interactive 3-Pane Dashboard (tmux)",
+      "type": "shell",
+      "command": "bash /home/andy/AMR/start_interactive.sh",
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "focus": true,
         "clear": true
       },
       "problemMatcher": []

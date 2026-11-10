@@ -1,0 +1,107 @@
+// ==============================================================================
+// Reference VS Code Keybindings for AMR Digital Twin Workspace
+// ==============================================================================
+// These keybindings can be placed in your VS Code 'keybindings.json' (Open with
+// Ctrl+Shift+P -> "Preferences: Open Keyboard Shortcuts (JSON)").
+//
+// Key Shortcuts Provided:
+//   - Alt+Shift+T : Opens 3 separate interactive terminal tabs (Sim, RViz2, Teleop)
+//   - Alt+Shift+S : Opens 3 side-by-side split interactive terminals in one view
+//   - Alt+T       : Opens 3 clean, empty named terminals ready for manual commands
+//   - Ctrl+Shift+X: Clears the active terminal screen
+// ==============================================================================
+[
+  {
+    "key": "alt+shift+t",
+    "command": "runCommands",
+    "args": {
+      "commands": [
+        "workbench.action.terminal.new",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "1) Simulation Node" }
+        },
+        {
+          "command": "workbench.action.terminal.sendSequence",
+          "args": { "text": "python3 sim_test.py\u000D" }
+        },
+        "workbench.action.terminal.new",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "2) RViz2 Visualization" }
+        },
+        {
+          "command": "workbench.action.terminal.sendSequence",
+          "args": { "text": "./launch_rviz.sh\u000D" }
+        },
+        "workbench.action.terminal.new",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "3) Interactive Teleop & HUD" }
+        },
+        {
+          "command": "workbench.action.terminal.sendSequence",
+          "args": { "text": "python3 teleop.py\u000D" }
+        }
+      ]
+    }
+  },
+  {
+    "key": "alt+shift+s",
+    "command": "runCommands",
+    "args": {
+      "commands": [
+        "workbench.action.terminal.new",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "1) Simulation Node" }
+        },
+        {
+          "command": "workbench.action.terminal.sendSequence",
+          "args": { "text": "python3 sim_test.py\u000D" }
+        },
+        "workbench.action.terminal.split",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "2) RViz2 Visualization" }
+        },
+        {
+          "command": "workbench.action.terminal.sendSequence",
+          "args": { "text": "./launch_rviz.sh\u000D" }
+        },
+        "workbench.action.terminal.split",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "3) Interactive Teleop & HUD" }
+        },
+        {
+          "command": "workbench.action.terminal.sendSequence",
+          "args": { "text": "python3 teleop.py\u000D" }
+        }
+      ]
+    }
+  },
+  {
+    "key": "alt+t",
+    "command": "runCommands",
+    "args": {
+      "commands": [
+        "workbench.action.terminal.new",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "1) Simulation Node" }
+        },
+        "workbench.action.terminal.new",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "2) RViz2 Visualization" }
+        },
+        "workbench.action.terminal.new",
+        {
+          "command": "workbench.action.terminal.renameWithArg",
+          "args": { "name": "3) Interactive Teleop & HUD" }
+        }
+      ]
+    }
+  }
+]
