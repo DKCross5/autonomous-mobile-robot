@@ -1,0 +1,48 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ARCHIVE - Open All Robot Terminals",
+      "dependsOn": [
+        "1) Simulation Node",
+        "2) Interactive Teleop & HUD",
+        "3) RViz2 Visualization",
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "1) Simulation Node",
+      "type": "shell",
+      "command": "bash",
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "2) Interactive Teleop & HUD",
+      "type": "shell",
+      "command": "bash",
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "3) RViz2 Visualization",
+      "type": "shell",
+      "command": "bash",
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "focus": false
+      },
+      "problemMatcher": []
+    },
+  ]
+}
