@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+import os
 import time
 import math
 import threading
@@ -268,7 +270,8 @@ def main():
     ros_spin_thread.start()
 
     # Load the MuJoCo Model
-    model = mujoco.MjModel.from_xml_path('my_amr.xml')
+    xml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'my_amr.xml')
+    model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
 
     # Cache Sensor and Actuator IDs

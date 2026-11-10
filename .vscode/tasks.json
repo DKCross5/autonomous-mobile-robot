@@ -2,11 +2,25 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "🚀 Launch All Robot Terminals (Parallel Panels)",
+      "dependsOn": [
+        "1) Simulation Node",
+        "2) Interactive Teleop & HUD",
+        "3) RViz2 Visualization"
+      ],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "ARCHIVE - Open All Robot Terminals",
       "dependsOn": [
         "1) Simulation Node",
         "2) Interactive Teleop & HUD",
-        "3) RViz2 Visualization",
+        "3) RViz2 Visualization"
       ],
       "dependsOrder": "parallel",
       "problemMatcher": []
@@ -14,35 +28,50 @@
     {
       "label": "1) Simulation Node",
       "type": "shell",
-      "command": "bash",
+      "command": "bash -c 'source /opt/ros/humble/setup.bash && python3 /home/andy/AMR/sim_test.py'",
       "presentation": {
         "panel": "dedicated",
         "reveal": "always",
-        "focus": false
+        "focus": false,
+        "clear": true
       },
       "problemMatcher": []
     },
     {
       "label": "2) Interactive Teleop & HUD",
       "type": "shell",
-      "command": "bash",
+      "command": "bash -c 'source /opt/ros/humble/setup.bash && python3 /home/andy/AMR/teleop.py'",
       "presentation": {
         "panel": "dedicated",
         "reveal": "always",
-        "focus": false
+        "focus": true,
+        "clear": true
       },
       "problemMatcher": []
     },
     {
       "label": "3) RViz2 Visualization",
       "type": "shell",
-      "command": "bash",
+      "command": "bash /home/andy/AMR/launch_rviz.sh",
       "presentation": {
         "panel": "dedicated",
         "reveal": "always",
-        "focus": false
+        "focus": false,
+        "clear": true
       },
       "problemMatcher": []
     },
+    {
+      "label": "⚡ Master Launcher (Single Terminal with Auto-Cleanup)",
+      "type": "shell",
+      "command": "bash /home/andy/AMR/start_amr.sh",
+      "presentation": {
+        "panel": "dedicated",
+        "reveal": "always",
+        "focus": true,
+        "clear": true
+      },
+      "problemMatcher": []
+    }
   ]
 }
