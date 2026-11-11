@@ -1,5 +1,9 @@
 # AMR Digital Twin Project: Master Technical Briefing & Phase Handoff
 
+> [!IMPORTANT]
+> **🤖 AI Agent Ingestion Directive:**
+> If you are an AI assistant starting a new conversation session, read this document to immediately ingest the complete technical architecture, calibrated kinematics, and ground rules. Once reviewed, confirm ingestion to the user and immediately proceed with executing **Section 6: Immediate Next Step (Phase 3 Gate)**. Always follow **Section 7: Rules of Engagement** (automatic commits with structured logs, proactive HUD/UI design, and interactive terminal workflows).
+
 ## 1. Executive Summary & Core Objective
 - **Mission:** Transform a manual RC car chassis into a fully autonomous mobile robot (AMR) capable of 2D/3D SLAM mapping, obstacle avoidance, and Nav2 waypoint navigation in simulation (MuJoCo digital twin) before deploying to physical hardware.
 - **Physical Hardware Target:**
