@@ -10,7 +10,7 @@ Panels:
         - /TF1
         - /Robot Visuals1
         - /Trajectory Path1
-        - /Lidar Range Cone1
+        - /LiDAR Scan1
         - /Odometry1
       Splitter Ratio: 0.5
     Tree Height: 600
@@ -103,19 +103,30 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /robot_path
       Value: true
-    - Alpha: 0.65
-      Buffer Length: 1
-      Class: rviz_default_plugins/Range
+    - Alpha: 0.85
+      Class: rviz_default_plugins/LaserScan
       Color: 0; 230; 255
+      Color Transformer: FlatColor
+      Decay Time: 0
       Enabled: true
-      Name: Lidar Range Cone
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: LiDAR Scan
+      Point Size: 3
+      Position Transformer: XYZ
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.03
+      Style: Points
       Topic:
         Depth: 10
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /sim_lidar
+        Value: /scan
+      Use Fixed Frame: false
+      Use rainbow: false
       Value: true
     - Alpha: 1
       Axes Length: 0.3

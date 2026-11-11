@@ -21,9 +21,9 @@
 | File | Type | Role & Capabilities |
 | :--- | :--- | :--- |
 | `my_amr.xml` | MuJoCo MJCF | Physics model: Differential drive chassis, 6-inch rubber wheels ($R=0.0762\text{m}$, track $L=0.36\text{m}$), motor actuators (`armature="0.01"`, `kv="3.0"`), low-friction caster contact pair (`friction="0.001"`), red obstacle wall ($X=2.5\text{m}$), spinning LiDAR joint with rangefinder sensor. |
-| `sim_test.py` | ROS 2 / MuJoCo | Core simulation node (500Hz physics, 50Hz throttled viewer sync). Background threaded ROS executor (`rclpy.spin`). Dynamic slew rate filters, typamatic deadman watchdog (`FIRST_PRESS=0.55s`, `HOLD=0.15s`). Dynamic TF2 broadcaster (`odom -> base_link -> lidar_link`), publishes `/odom`, `/robot_path`, `/robot_visual` (MarkerArray), `/sim_lidar`. Subscribes to `/cmd_vel`. |
+| `sim_test.py` | ROS 2 / MuJoCo | Core simulation node (500Hz physics, 50Hz throttled viewer sync). Background threaded ROS executor (`rclpy.spin`). Dynamic slew rate filters, typamatic deadman watchdog (`FIRST_PRESS=0.55s`, `HOLD=0.15s`). Dynamic TF2 broadcaster (`odom -> base_link -> lidar_link`), publishes `/odom`, `/robot_path`, `/robot_visual` (MarkerArray), `/scan` (full 360-beam `LaserScan`). Subscribes to `/cmd_vel`. |
 | `teleop.py` | Tkinter / ROS 2 | Dark-theme GUI Control Pad and Telemetry HUD. Runs in WSLg. True `<KeyPress>` / `<KeyRelease>` tracking with 35ms X11 debounce filter. 50Hz publish rate. Full multi-key chord support (drive + steer simultaneously). Live telemetry card ($X, Y, \text{Yaw}, \text{Speed}, \text{Odometer}$). |
-| `amr_view.rviz` | YAML Config | Pre-configured RViz2 layout: Fixed Frame `odom`, dark slate background (`#1E1E2E`), Grid, TF tree, 3D AMR MarkerArray, neon-green Path trail, cyan LiDAR cone, orange Odometry pose arrow, calibrated Orbit camera. |
+| `amr_view.rviz` | YAML Config | Pre-configured RViz2 layout: Fixed Frame `odom`, dark slate background (`#1E1E2E`), Grid, TF tree, 3D AMR MarkerArray, neon-green Path trail, cyan 360-beam LaserScan point cloud, orange Odometry pose arrow, calibrated Orbit camera. |
 | `launch_rviz.sh` | Shell Executable | Automated RViz2 launcher: auto-sources ROS 2 Humble, loads `amr_view.rviz`, displays formatted status banner. |
 | `start_amr.sh` | Shell Executable | Master one-command launcher: starts sim, rviz, and teleop with clean signal trapping and child PID teardown. |
 | `start_interactive.sh` | Shell Executable | Multi-pane `tmux` dashboard: splits terminal into 3 live interactive bash shells with full mouse support. |
@@ -53,6 +53,13 @@ STEER_LIN_ACCEL   = 4.0      # m/s^2 (active steering acceleration)
 STEER_ANG_ACCEL   = 10.0     # rad/s^2
 BRAKE_LIN_DECEL   = 2.0      # m/s^2 (smooth coasting deceleration)
 BRAKE_ANG_DECEL   = 5.0      # rad/s^2
+
+# LaserScan Synthesis (ROBOTIS LDS-01 spec emulation via mujoco.mj_ray)
+LIDAR_NUM_BEAMS      = 360   # 1° angular resolution (REP-117 compliant)
+LIDAR_RANGE_MIN      = 0.12  # meters (LDS-01 blind-spot cutoff)
+LIDAR_RANGE_MAX      = 3.50  # meters (LDS-01 max reliable range)
+LIDAR_SCAN_HZ        = 10.0  # Hz  (one scan every 50 physics steps @ 500 Hz)
+LIDAR_MOUNT_Z_NUDGE  = 0.025 # meters (ray-origin upward nudge clears chassis deck)
 ```
 
 ---
@@ -72,6 +79,10 @@ BRAKE_ANG_DECEL   = 5.0      # rad/s^2
    - *Fix:* Built a Tkinter GUI tracking true X11 KeyPress/KeyRelease events with a 35ms debounce filter in `teleop.py`.
 5. **Interactive Terminals vs. Task Runners:**
    - *Lesson:* Task runners lock terminals on exit. Interactive terminals with persistent bash prompts (or `; exec bash`) are essential for rapid robotics iteration and `Up-Arrow` re-runs.
+6. **`mj_ray` Self-Hit (LiDAR Zero-Distance Returns):**
+   - *Cause:* `mujoco.mj_ray()` with `bodyexclude=-1` (no exclusion) fires from inside or on the surface of the LiDAR body geom, returning `dist=0.0` self-intersections for all beams.
+   - *Fix:* Cache `lidar_body_id = mj_name2id(model, mjOBJ_BODY, "lidar")` at startup. Pass it as `bodyexclude` to every `mj_ray` call, and offset the ray origin `+0.025 m` in Z from `data.xpos[lidar_body_id]` to clear the chassis deck.
+   - *Validated:* 47 correct wall-hits at 2.35 m, zero self-hits across all 360 beams.
 
 ---
 
@@ -80,8 +91,8 @@ BRAKE_ANG_DECEL   = 5.0      # rad/s^2
 ```
 Phase 1: Model & Physics Baseline [COMPLETED]
 Phase 2: Closed-Loop Teleop & Telemetry Visualization [COMPLETED]
-Phase 3: Sensor Realism & 2D LiDAR Scan Emulation [ACTIVE / NEXT]
-Phase 4: 2D SLAM Mapping (Cartographer / slam_toolbox) [PENDING]
+Phase 3: Sensor Realism & 2D LiDAR Scan Emulation [COMPLETED]
+Phase 4: 2D SLAM Mapping (Cartographer / slam_toolbox) [ACTIVE / NEXT]
 Phase 5: Autonomous Navigation (Nav2 Costmaps & Planners) [PENDING]
 Phase 6: Hardware-in-the-Loop & Physical Deployment [PENDING]
 ```
@@ -89,22 +100,26 @@ Phase 6: Hardware-in-the-Loop & Physical Deployment [PENDING]
 ### Phase Gate Checklist
 - [x] **Phase 1 Gate:** MuJoCo 3-wheel model drives without exploding; ROS 2 bridge publishes telemetry and receives `/cmd_vel`.
 - [x] **Phase 2 Gate:** Fluid multi-key teleoperation HUD; dynamic TF2 broadcasting (`odom -> base_link -> lidar_link`); persistent RViz2 layout with 3D markers and path.
-- [ ] **Phase 3 Gate (CURRENT):** 
-  - Upgrade rangefinder to a full 360° `sensor_msgs/msg/LaserScan` topic (`/scan`) matching ROBOTIS LDS-01 specs (360 samples, 1° resolution, 0.12m–3.5m range, 5Hz–10Hz scan rate).
-  - Simulate wheel encoder ticks with realistic noise/slippage vs. ground-truth odometry.
-- [ ] **Phase 4 Gate:** Generate and save a 2D occupancy grid map (`/map`) using `slam_toolbox`.
+- [x] **Phase 3 Gate (COMPLETED):**
+  - ✅ Full 360-beam `sensor_msgs/msg/LaserScan` on `/scan` synthesized via `mujoco.mj_ray()` at 10 Hz, matching ROBOTIS LDS-01 spec (1° resolution, 0.12–3.5 m range).
+  - ✅ Zero self-hits via `bodyexclude=lidar_body_id`; 47 clean wall-hit returns validated at 2.35 m.
+  - ✅ `amr_view.rviz` updated: `Range` cone display replaced by `LaserScan` point cloud display (cyan, `Style: Points`, subscribed to `/scan`).
+  - ⏳ Noisy wheel encoder odometry (Phase 3 stretch goal) deferred to Phase 4 — `slam_toolbox` can be integrated with ground-truth odometry first.
+- [ ] **Phase 4 Gate (CURRENT):** Generate and save a 2D occupancy grid map (`/map`) using `slam_toolbox`.
 - [ ] **Phase 5 Gate:** Autonomous navigation to goal poses avoiding dynamic obstacles via Nav2.
 - [ ] **Phase 6 Gate:** Deploy ROS 2 control stack to physical Sabertooth 2x25 driver and hardware LDS-01 sensor.
 
 ---
 
 ## 6. Immediate Next Step (For the New Chat Session)
-**Target:** Transition from the single-ray `sensor_msgs/msg/Range` (`/sim_lidar`) to a standard 2D planar LiDAR scan `sensor_msgs/msg/LaserScan` (`/scan`).
-- **Why:** SLAM algorithms (`slam_toolbox`, `cartographer`) cannot map with a single rangefinder ray; they require standard 2D laser scans.
+**Target:** Integrate `slam_toolbox` to generate a live 2D occupancy grid map (`/map`) from the `/scan` LaserScan topic.
+- **Why:** With a standards-compliant 360-beam `/scan` now publishing, the pipeline is ready for SLAM. `slam_toolbox` in `online_async` mode will consume `/scan` + `/tf` (`odom -> base_link -> lidar_link`) and emit a `/map` occupancy grid that persists across the room as the robot drives.
 - **Approach:**
-  1. In `sim_test.py`, accumulate the spinning rangefinder readings across full 360° revolutions into a complete `sensor_msgs/msg/LaserScan` array (360 ranges), OR synthesize an omnidirectional raycast scan in MuJoCo.
-  2. Add the LaserScan display to `amr_view.rviz` and verify planar point visualization in RViz2.
-  3. Prepare topics and frame conventions for `slam_toolbox`.
+  1. Install `slam_toolbox` Humble package (`sudo apt install ros-humble-slam-toolbox`).
+  2. Create `slam_params.yaml` tuned to our model (5m×5m arena, 10 Hz scan, ground-truth `/odom`).
+  3. Add `slam_toolbox` node launch to `start_amr.sh` with clean SIGINT teardown.
+  4. Add `/map` Occupancy Grid display to `amr_view.rviz` and verify map builds correctly as robot is teleoperated around the red wall obstacle.
+  5. Add a `save_map.sh` helper (wraps `ros2 run nav2_map_server map_saver_cli`) for persisting maps to disk.
 
 ---
 

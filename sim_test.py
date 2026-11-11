@@ -3,11 +3,12 @@ import os
 import time
 import math
 import threading
+import numpy as np
 import mujoco
 import mujoco.viewer
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Range
+from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist, TransformStamped, PoseStamped
 from nav_msgs.msg import Odometry, Path
 from visualization_msgs.msg import Marker, MarkerArray
@@ -27,13 +28,26 @@ STEER_ANG_ACCEL = 10.0
 BRAKE_LIN_DECEL = 2.0
 BRAKE_ANG_DECEL = 5.0
 
+# ── LiDAR Sensor Parameters (ROBOTIS LDS-01 spec) ─────────────────────────────
+LIDAR_NUM_BEAMS    = 360        # 360 samples per revolution (1° angular resolution)
+LIDAR_ANGLE_MIN    = 0.0        # radians – scan start angle (facing +X in lidar_link)
+LIDAR_ANGLE_MAX    = 2.0 * math.pi  # radians – scan end angle
+LIDAR_ANGLE_INC    = (2.0 * math.pi) / LIDAR_NUM_BEAMS  # radians per beam
+LIDAR_RANGE_MIN    = 0.12       # metres – LDS-01 minimum reliable detection range
+LIDAR_RANGE_MAX    = 3.50       # metres – LDS-01 maximum detection range
+LIDAR_SCAN_HZ      = 10.0       # Hz – scan publication rate
+# Height of the lidar_beam site above the floor, used to anchor each ray origin
+LIDAR_MOUNT_X      = 0.05       # metres forward from chassis centre (matches XML)
+LIDAR_MOUNT_Z      = 0.09       # metres above chassis centre (matches XML)
+# ──────────────────────────────────────────────────────────────────────────────
+
 
 class AMRSimNode(Node):
     def __init__(self):
         super().__init__('mujoco_sim_node')
 
         # 1. Telemetry & Control Publishers / Subscribers
-        self.lidar_pub = self.create_publisher(Range, 'sim_lidar', 10)
+        self.scan_pub = self.create_publisher(LaserScan, 'scan', 10)
         self.odom_pub = self.create_publisher(Odometry, 'odom', 10)
         self.path_pub = self.create_publisher(Path, 'robot_path', 10)
         self.marker_pub = self.create_publisher(MarkerArray, 'robot_visual', 10)
@@ -261,6 +275,91 @@ class AMRSimNode(Node):
         return markers
 
 
+    def synthesize_laserscan(self, model: 'mujoco.MjModel', data: 'mujoco.MjData',
+                              lidar_body_id: int, stamp) -> LaserScan:
+        """
+        Synthesise a full 360-beam planar LaserScan using MuJoCo's mj_ray() API.
+
+        Strategy
+        --------
+        For each of the 360 beams we fire a horizontal ray from the LiDAR body's
+        world-frame centre (data.xpos[lidar_body_id]).  The lidar body itself is
+        excluded from intersection via bodyexclude so there are no zero-distance
+        self-hits from the spinning LiDAR cylinder geom.
+
+        mj_ray() returns the distance to the first intersecting geom; we clamp
+        to [LIDAR_RANGE_MIN, LIDAR_RANGE_MAX] and report inf for no-returns, as
+        per REP-117 convention.
+
+        Frame convention
+        ----------------
+        • The scan is published in 'lidar_link'; RViz2 uses the TF tree to
+          display points in the fixed 'odom' frame automatically.
+        • angle_min = 0 → +X axis of 'lidar_link' (robot forward direction).
+        • Angles increase counter-clockwise (REP-117 standard).
+        """
+        # ── 1. Ray origin: lidar body centre in world frame ───────────────────
+        # data.xpos is populated each step by mj_step; shape = [nbody, 3].
+        # A tiny +Z nudge (0.025 m) keeps the origin clear of the chassis deck
+        # geom while remaining well inside the planar scan height band.
+        ray_origin = data.xpos[lidar_body_id].copy()
+        ray_origin[2] += 0.025
+
+        # ── 2. Current robot yaw (from free-joint quaternion) ─────────────────
+        # qpos[3:7] = (w, x, y, z) in MuJoCo quaternion convention.
+        qw, qx, qy, qz = (float(data.qpos[3]), float(data.qpos[4]),
+                           float(data.qpos[5]), float(data.qpos[6]))
+        yaw = math.atan2(2.0 * (qw * qz + qx * qy),
+                         1.0 - 2.0 * (qy * qy + qz * qz))
+
+        # ── 3. Cast 360 horizontal rays ───────────────────────────────────────
+        ranges = []
+        geomid = np.array([-1], dtype=np.int32)   # reused scratch buffer
+
+        for i in range(LIDAR_NUM_BEAMS):
+            # Beam angle in world frame: robot yaw + beam index angle.
+            # i=0 → forward (+X of lidar_link); increases CCW (REP-117).
+            beam_world_angle = yaw + LIDAR_ANGLE_MIN + i * LIDAR_ANGLE_INC
+
+            # Horizontal unit direction vector (z=0 → planar scan)
+            ray_dir = np.array([math.cos(beam_world_angle),
+                                 math.sin(beam_world_angle),
+                                 0.0], dtype=np.float64)
+
+            # mj_ray: geomgroup=None → all groups; flg_static=1 → include
+            # worldbody geoms (floor, obstacle wall); bodyexclude=lidar_body_id
+            # → skip the spinning LiDAR cylinder (zero-distance self-hit guard).
+            dist = mujoco.mj_ray(model, data,
+                                 ray_origin, ray_dir,
+                                 None,             # geomgroup mask  (None = all)
+                                 1,                # flg_static: include static geoms
+                                 lidar_body_id,    # bodyexclude: skip the lidar body
+                                 geomid)
+
+            # REP-117 range gating: out-of-range or blind-spot → inf
+            if LIDAR_RANGE_MIN <= dist <= LIDAR_RANGE_MAX:
+                ranges.append(float(dist))
+            else:
+                ranges.append(float('inf'))
+
+        # ── 4. Build and return the LaserScan message ─────────────────────────
+        scan = LaserScan()
+        scan.header.stamp = stamp
+        scan.header.frame_id = 'lidar_link'
+
+        scan.angle_min       = LIDAR_ANGLE_MIN
+        scan.angle_max       = LIDAR_ANGLE_MAX - LIDAR_ANGLE_INC  # last sample (no wrap-around)
+        scan.angle_increment = LIDAR_ANGLE_INC
+        scan.time_increment  = (1.0 / LIDAR_SCAN_HZ) / LIDAR_NUM_BEAMS
+        scan.scan_time       = 1.0 / LIDAR_SCAN_HZ
+        scan.range_min       = LIDAR_RANGE_MIN
+        scan.range_max       = LIDAR_RANGE_MAX
+        scan.ranges          = ranges
+        scan.intensities     = []   # LDS-01 does not publish intensity data
+
+        return scan
+
+
 def main():
     rclpy.init()
     node = AMRSimNode()
@@ -274,11 +373,16 @@ def main():
     model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
 
-    # Cache Sensor and Actuator IDs
-    sensor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SENSOR, "lidar_dist")
+    # Cache Actuator and Body IDs
     lidar_motor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "lidar_motor")
-    left_motor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_motor")
+    left_motor_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_motor")
     right_motor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right_motor")
+    # LiDAR body ID: used as mj_ray bodyexclude to prevent self-intersection hits
+    lidar_body_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "lidar")
+
+    # Publish the full 360-beam scan at LIDAR_SCAN_HZ (default 10 Hz).
+    # At 500 Hz physics, one scan every 50 steps.
+    scan_publish_interval = int(round(1.0 / (LIDAR_SCAN_HZ * model.opt.timestep)))
 
     step_counter = 0
 
@@ -290,7 +394,8 @@ def main():
     print("MuJoCo simulation started. Launching viewer...")
     print(f"Actuator IDs: left_motor={left_motor_id}, right_motor={right_motor_id}, lidar_motor={lidar_motor_id}")
     print("Active TF Broadcast: odom -> base_link -> lidar_link")
-    print("Publishing Topics: /odom, /robot_visual, /robot_path, /sim_lidar")
+    print(f"LaserScan: {LIDAR_NUM_BEAMS} beams @ {LIDAR_SCAN_HZ:.0f} Hz  ({LIDAR_RANGE_MIN}–{LIDAR_RANGE_MAX} m)")
+    print("Publishing Topics: /odom, /robot_visual, /robot_path, /scan")
     print("Listening for velocity commands on topic: /cmd_vel")
     print("==========================================================")
 
@@ -363,24 +468,11 @@ def main():
                 now_msg = node.get_clock().now().to_msg()
                 node.marker_pub.publish(node.create_robot_markers(now_msg))
 
-            # Publish LiDAR Range message at ~10Hz (every 50 physics steps)
-            if step_counter % 50 == 0:
-                distance = data.sensordata[sensor_id]
-
-                msg = Range()
-                msg.header.stamp = node.get_clock().now().to_msg()
-                msg.header.frame_id = "lidar_link"
-                msg.radiation_type = Range.INFRARED
-                msg.min_range = 0.0
-                msg.max_range = 5.0
-                msg.field_of_view = 0.1
-
-                if distance > 0:
-                    msg.range = float(distance)
-                else:
-                    msg.range = 4.9
-
-                node.lidar_pub.publish(msg)
+            # Publish full 360-beam LaserScan at LIDAR_SCAN_HZ (10 Hz, every 50 steps)
+            if step_counter % scan_publish_interval == 0:
+                now_msg = node.get_clock().now().to_msg()
+                scan_msg = node.synthesize_laserscan(model, data, lidar_body_id, now_msg)
+                node.scan_pub.publish(scan_msg)
 
             # Pace physics loop to real-time
             time_until_next_step = model.opt.timestep - (time.time() - step_start)
