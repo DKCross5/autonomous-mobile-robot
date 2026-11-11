@@ -2,7 +2,7 @@
 
 > [!IMPORTANT]
 > **🤖 AI Agent Ingestion Directive:**
-> If you are an AI assistant starting a new conversation session, read this document to immediately ingest the complete technical architecture, calibrated kinematics, and ground rules. Once reviewed, confirm ingestion to the user and immediately proceed with executing **Section 6: Immediate Next Step (Phase 3 Gate)**. Always follow **Section 7: Rules of Engagement** (automatic commits with structured logs, proactive HUD/UI design, and interactive terminal workflows).
+> If you are an AI assistant starting a new conversation session, read this document to immediately ingest the complete technical architecture, calibrated kinematics, and ground rules. Once reviewed, confirm ingestion to the user and immediately proceed with executing **Section 6: Immediate Next Step (Phase 3 Gate)**. Always follow **Section 7: Rules of Engagement, Engineering Philosophy & Assistant Directives** (including the Living Document Protocol to continuously record and update this file with any new methodologies, operator preferences, or directives discussed with the user).
 
 ## 1. Executive Summary & Core Objective
 - **Mission:** Transform a manual RC car chassis into a fully autonomous mobile robot (AMR) capable of 2D/3D SLAM mapping, obstacle avoidance, and Nav2 waypoint navigation in simulation (MuJoCo digital twin) before deploying to physical hardware.
@@ -108,8 +108,27 @@ Phase 6: Hardware-in-the-Loop & Physical Deployment [PENDING]
 
 ---
 
-## 7. Rules of Engagement & Assistant Directives
-1. **Automatic Git Commits:** After *every* functional code change, automatically run tests and commit the changes via `git commit` with an elaborate, structured commit message (Context, Technical Breakdown, Verification).
-2. **Proactive UI / HUD Elements:** Prioritize user-friendly HUD elements, status indicators, and one-click workflows (like the Teleop HUD and RViz launchers).
-3. **Interactive Terminals:** Keep commands runnable in interactive shell environments; preserve `; exec bash` resilience.
-4. **No Premature Abstractions:** Keep code transparent, modular, and directly runnable. Avoid heavy ROS 2 boilerplate or unneeded packages until required by Nav2.
+## 7. Rules of Engagement, Engineering Philosophy & Assistant Directives
+
+> [!IMPORTANT]
+> **Living Document Protocol:** If ANY new methodology, design decision, operator preference, or rule of engagement is discussed with the user during a session, the active AI assistant **MUST record and update this document** before concluding the session. `PROJECT_HANDOFF.md` is the living Single Source of Truth (SSOT).
+
+### Core Directives & Standards:
+1. **Automatic Git Commits:**
+   - After *every* functional code change or milestone, automatically run validation tests and commit the changes via `git commit`.
+   - Every commit message MUST be elaborate, clean, and structured (Context & Motivation, Key Technical Breakdown, Verification & Impact).
+2. **Living Documentation & Session Handoff Maintenance:**
+   - Continuously update this document with newly calibrated physical parameters, resolved bugs, architectural changes, and roadmap progress.
+   - When asked for a handoff, update Section 6 with the next exact Phase Gate and provide the user with the concise 1-sentence prompt for the incoming AI.
+3. **Efficient Coding & Logical Methodology:**
+   - **First-Principles Robotics:** Code from physical fundamentals (wheel radius, track width, motor torque/armature, kinematics). Never use arbitrary fudge factors or magic numbers without clear physical units and commentary.
+   - **Modular & Defensive:** Write clean, readable, single-responsibility functions with bounds checking and graceful error recovery. Keep simulations robust against NaN/Inf instabilities and timing jitter.
+   - **No Premature Abstractions:** Keep code directly runnable, transparent, and modular. Do not introduce heavy boilerplate, overly complex package structures, or unnecessary dependencies until explicitly required by Nav2/SLAM.
+4. **User-Friendliness & Developer Ergonomics:**
+   - **Interactive-First Workflow:** Maintain interactive terminal support (`start_interactive.sh`, VS Code keybindings `Alt+Shift+T` and `Alt+Shift+S`, and `; exec bash` fallback in tasks) so shells remain alive for instant `<Up-Arrow>` re-runs and ROS 2 CLI introspection.
+   - **One-Click Automation:** Provide turnkey scripts (`start_amr.sh`, `launch_rviz.sh`) with automatic environment detection, ROS 2 sourcing, and clean SIGINT/SIGTERM teardown.
+   - **Terminal Polish:** Use formatted ANSI color banners, progress indicators, and informative status logs so the operator always knows system state at a glance.
+5. **"Wow-Factor", Showcase Polish & Cutting-Edge Flair:**
+   - **For Complete Beginners:** The project must be immediately visual, intuitive, and delightful. High-contrast dark themes, real-time 3D robot models in RViz2, neon trajectory trails, and an accessible GUI control pad allow anyone to pick up the controls and understand what the robot is doing within seconds.
+   - **For Industry Veterans:** The project must demonstrate undeniable engineering rigor. Perfect ROS 2 Humble conventions, disciplined TF2 dynamic transform trees (`odom -> base_link -> lidar_link`), accurate differential drive kinematics, realistic contact friction, and zero sloppy hacks.
+   - **For Cutting-Edge Innovators:** Add unique, bespoke flair that elevates the project beyond standard textbook tutorials. Examples include our dual dynamic slew rate filters (asymmetric acceleration vs. coasting deceleration), true multi-key chord teleoperation with X11 debounce filtering, live HUD telemetry cards (odometer, digital speedometer, orientation yaw), and sleek visual dashboards. Look for creative opportunities to innovate on telepresence, data visualization, and simulation realism at every step.
