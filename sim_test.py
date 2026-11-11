@@ -103,7 +103,7 @@ class AMRSimNode(Node):
         t_base.transform.rotation.y = float(qpos[5])
         t_base.transform.rotation.z = float(qpos[6])
 
-        # 2. base_link -> lidar_link (Mount offset pos=[0.05, 0, 0.09], spinning with lidar_spin angle)
+        # 2. base_link -> lidar_link (Mount offset pos=[0.05, 0, 0.09], fixed forward orientation)
         t_lidar = TransformStamped()
         t_lidar.header.stamp = stamp
         t_lidar.header.frame_id = 'base_link'
@@ -112,12 +112,12 @@ class AMRSimNode(Node):
         t_lidar.transform.translation.y = 0.0
         t_lidar.transform.translation.z = 0.09
 
-        # Rotation around Z by lidar_spin joint angle (qpos[9])
-        lidar_angle = float(qpos[9])
-        t_lidar.transform.rotation.w = math.cos(lidar_angle / 2.0)
+        # Rigidly mounted sensor frame: zero rotation relative to chassis (REP-105 / REP-117)
+        # Laser rays are indexed relative to lidar_link (+X forward), so the frame must stay static!
+        t_lidar.transform.rotation.w = 1.0
         t_lidar.transform.rotation.x = 0.0
         t_lidar.transform.rotation.y = 0.0
-        t_lidar.transform.rotation.z = math.sin(lidar_angle / 2.0)
+        t_lidar.transform.rotation.z = 0.0
 
         self.tf_broadcaster.sendTransform([t_base, t_lidar])
 
@@ -400,8 +400,8 @@ def main():
     print("==========================================================")
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
+        wall_start_time = time.time()
         while viewer.is_running():
-            step_start = time.time()
             dt = model.opt.timestep
 
             # Two-Stage Watchdog
@@ -453,19 +453,13 @@ def main():
 
             step_counter += 1
 
-            # Sync viewer at ~50Hz (every 10 physics steps)
-            if step_counter % 10 == 0:
-                viewer.sync()
-
-            # Dynamic TF & Odometry Broadcast (~50Hz, every 10 physics steps)
+            # Sync viewer, broadcast TF, Odometry, and 3D Visual Markers at ~50Hz (every 10 physics steps)
             if step_counter % 10 == 0:
                 now_msg = node.get_clock().now().to_msg()
+                viewer.sync()
                 node.publish_transforms(now_msg, data.qpos)
                 node.publish_odometry(now_msg, data.qpos, data.qvel)
-
-            # 3D Visual Robot Markers & Path Broadcast (~20Hz, every 25 steps)
-            if step_counter % 25 == 0:
-                now_msg = node.get_clock().now().to_msg()
+                # Upgraded marker publication to 50Hz (was 20Hz) for fluid, jitter-free 3D robot motion
                 node.marker_pub.publish(node.create_robot_markers(now_msg))
 
             # Publish full 360-beam LaserScan at LIDAR_SCAN_HZ (10 Hz, every 50 steps)
@@ -474,10 +468,18 @@ def main():
                 scan_msg = node.synthesize_laserscan(model, data, lidar_body_id, now_msg)
                 node.scan_pub.publish(scan_msg)
 
-            # Pace physics loop to real-time
-            time_until_next_step = model.opt.timestep - (time.time() - step_start)
-            if time_until_next_step > 0:
-                time.sleep(time_until_next_step)
+            # High-efficiency display-rate real-time pacing (~50 Hz)
+            # Batching sleep to the 10-step sync boundary eliminates 500 OS sleep syscalls/sec,
+            # avoiding timer jitter and keeping simulation locked 1:1 with wall-clock time.
+            if step_counter % 10 == 0:
+                target_wall_time = wall_start_time + step_counter * dt
+                now = time.time()
+                sleep_time = target_wall_time - now
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                elif now - target_wall_time > 0.1:
+                    # Prevent catch-up loop if window dragging or WSL scheduler lags
+                    wall_start_time = now - step_counter * dt
 
     # Clean shutdown
     print("Closing simulation node...")

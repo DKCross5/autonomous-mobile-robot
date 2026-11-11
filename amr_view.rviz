@@ -103,7 +103,7 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /robot_path
       Value: true
-    - Alpha: 0.85
+    - Alpha: 0.95
       Class: rviz_default_plugins/LaserScan
       Color: 0; 230; 255
       Color Transformer: FlatColor
@@ -112,12 +112,12 @@ Visualization Manager:
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
       Name: LiDAR Scan
-      Point Size: 3
+      Point Size: 4
       Position Transformer: XYZ
       Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.03
-      Style: Points
+      Size (Pixels): 4
+      Size (m): 0.04
+      Style: Flat Squares
       Topic:
         Depth: 10
         Durability Policy: Volatile
@@ -156,7 +156,7 @@ Visualization Manager:
   Global Options:
     Background Color: 30; 30; 46
     Fixed Frame: odom
-    Frame Rate: 30
+    Frame Rate: 60
   Name: root
   Tools:
     - Class: rviz_default_plugins/Interact

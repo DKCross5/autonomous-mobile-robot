@@ -83,6 +83,14 @@ LIDAR_MOUNT_Z_NUDGE  = 0.025 # meters (ray-origin upward nudge clears chassis de
    - *Cause:* `mujoco.mj_ray()` with `bodyexclude=-1` (no exclusion) fires from inside or on the surface of the LiDAR body geom, returning `dist=0.0` self-intersections for all beams.
    - *Fix:* Cache `lidar_body_id = mj_name2id(model, mjOBJ_BODY, "lidar")` at startup. Pass it as `bodyexclude` to every `mj_ray` call, and offset the ray origin `+0.025 m` in Z from `data.xpos[lidar_body_id]` to clear the chassis deck.
    - *Validated:* 47 correct wall-hits at 2.35 m, zero self-hits across all 360 beams.
+7. **Stationary vs. Rotating TF for Omnidirectional LaserScans:**
+   - *Cause:* In Phase 2, `lidar_link` had a dynamic TF rotation matching `qpos[9]` because the rangefinder was a single ray on a spinning motor. In Phase 3, we synthesized a full 360-beam planar `LaserScan` where beam angles are already indexed relative to the robot. Because `lidar_link` continued rotating in TF at 10 rad/s, RViz rotated the entire 360-beam array by `lidar_angle`, causing the static wall reflection to spin in a circle around the AMR tangent to its orbit.
+   - *Fix:* Set `lidar_link` rotation in `publish_transforms` to identity (fixed mount: `w=1.0, x=0, y=0, z=0`). The MuJoCo physical green cylinder can still visually spin, but the ROS TF frame remains rigidly mounted to `base_link` per REP-105.
+   - *Validated:* Laser returns stay locked rock-solid on the obstacle wall without rotating.
+8. **WSL2 / Linux Timer Resolution & Simulation Stutter:**
+   - *Cause:* Calling `time.sleep()` on every 0.002s physics step (500 times per second) suffers from OS scheduler quantization (~1.5–3.0ms per sleep), dragging physics down to ~350–470 Hz and causing visual micro-stuttering in both MuJoCo and RViz2.
+   - *Fix:* Batch real-time pacing to display sync intervals (every 10 physics steps = 50 Hz) using a drift-free wall-clock time accumulator. Bump RViz2 render limit from 30 FPS to 60 FPS (`Frame Rate: 60`), and increase `robot_visual` MarkerArray publishing from 20 Hz to 50 Hz to match Odometry and TF.
+   - *Validated:* Zero timer drift, physics runs at solid 500 Hz, RViz renders at 60 FPS.
 
 ---
 
@@ -147,6 +155,12 @@ Phase 6: Hardware-in-the-Loop & Physical Deployment [PENDING]
    - **For Complete Beginners:** The project must be immediately visual, intuitive, and delightful. High-contrast dark themes, real-time 3D robot models in RViz2, neon trajectory trails, and an accessible GUI control pad allow anyone to pick up the controls and understand what the robot is doing within seconds.
    - **For Industry Veterans:** The project must demonstrate undeniable engineering rigor. Perfect ROS 2 Humble conventions, disciplined TF2 dynamic transform trees (`odom -> base_link -> lidar_link`), accurate differential drive kinematics, realistic contact friction, and zero sloppy hacks.
    - **For Cutting-Edge Innovators:** Add unique, bespoke flair that elevates the project beyond standard textbook tutorials. Examples include our dual dynamic slew rate filters (asymmetric acceleration vs. coasting deceleration), true multi-key chord teleoperation with X11 debounce filtering, live HUD telemetry cards (odometer, digital speedometer, orientation yaw), and sleek visual dashboards. Look for creative opportunities to innovate on telepresence, data visualization, and simulation realism at every step.
+6. **Operator Verification, Checkpoint Protocol & Concrete Testing Prompts:**
+   - Never conclude a functional code change or milestone by declaring it finished and prompting to push ahead to the next phase without an interactive verification checkpoint.
+   - Always provide the operator with:
+     a) **How to Launch/Test:** The exact commands, terminal steps, or one-click shortcuts to test the changes.
+     b) **What to Expect Visually:** Detailed visual checkpoints in MuJoCo, RViz2, terminal logs, or the Teleop GUI (e.g. colors, shapes, alignment, stability, topic rates).
+     c) **Interactive Test Recipe:** Concrete actions for the operator to perform (e.g. 'Press W to drive forward towards the wall, observe that cyan dots remain glued to the red wall face without rotating').
 
 <!-- [For future reference, these are the prompts that will connect any string of future chats together with this PROJECT_HANDOFF file]
 The Updated Reusable "Chat Handoff Generator" Meta-Prompt
