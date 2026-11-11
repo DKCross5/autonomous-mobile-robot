@@ -39,7 +39,7 @@
 WHEEL_RADIUS      = 0.0762   # meters (6-inch diameter drive wheels)
 WHEEL_BASE        = 0.36     # meters (distance between left & right wheel centerlines)
 PHYSICS_STEP_DT   = 0.002    # seconds (500 Hz simulation rate)
-VIEWER_SYNC_RATE  = 50       # Hz (throttled for smooth WSL rendering)
+VIEWER_SYNC_RATE  = 100      # Hz (synced to 100 FPS for ultra-fluid rendering)
 
 # Actuator & Contact Dynamics
 MOTOR_KV          = 3.0      # Velocity feedback damping gain
@@ -58,7 +58,8 @@ BRAKE_ANG_DECEL   = 5.0      # rad/s^2
 LIDAR_NUM_BEAMS      = 360   # 1° angular resolution (REP-117 compliant)
 LIDAR_RANGE_MIN      = 0.12  # meters (LDS-01 blind-spot cutoff)
 LIDAR_RANGE_MAX      = 3.50  # meters (LDS-01 max reliable range)
-LIDAR_SCAN_HZ        = 10.0  # Hz  (one scan every 50 physics steps @ 500 Hz)
+LIDAR_SCAN_HZ        = 20.0  # Hz  (one scan every 25 physics steps @ 500 Hz)
+LIDAR_TIME_INC       = 0.0   # seconds (instantaneous simulation scan; eliminates rolling-shutter seams)
 LIDAR_MOUNT_Z_NUDGE  = 0.025 # meters (ray-origin upward nudge clears chassis deck)
 ```
 
@@ -89,8 +90,14 @@ LIDAR_MOUNT_Z_NUDGE  = 0.025 # meters (ray-origin upward nudge clears chassis de
    - *Validated:* Laser returns stay locked rock-solid on the obstacle wall without rotating.
 8. **WSL2 / Linux Timer Resolution & Simulation Stutter:**
    - *Cause:* Calling `time.sleep()` on every 0.002s physics step (500 times per second) suffers from OS scheduler quantization (~1.5–3.0ms per sleep), dragging physics down to ~350–470 Hz and causing visual micro-stuttering in both MuJoCo and RViz2.
-   - *Fix:* Batch real-time pacing to display sync intervals (every 10 physics steps = 50 Hz) using a drift-free wall-clock time accumulator. Bump RViz2 render limit from 30 FPS to 60 FPS (`Frame Rate: 60`), and increase `robot_visual` MarkerArray publishing from 20 Hz to 50 Hz to match Odometry and TF.
-   - *Validated:* Zero timer drift, physics runs at solid 500 Hz, RViz renders at 60 FPS.
+   - *Fix:* Batch real-time pacing to display sync intervals (every 5 physics steps = 100 Hz) using a drift-free wall-clock time accumulator. Bump RViz2 render limit to 120 FPS (`Frame Rate: 120`), and broadcast TF, Odometry, and `robot_visual` MarkerArray at 100 Hz.
+   - *Validated:* Zero timer drift, physics runs at solid 500 Hz, RViz renders at 120 FPS.
+9. **LaserScan `time_increment` Rolling-Shutter Discontinuity Seam:**
+   - *Cause:* Setting `scan.time_increment = (1/Hz) / 360` (~0.00028s) instructed RViz2 to interpolate the robot's TF pose for each individual beam across the 100ms sweep. In MuJoCo simulation, all 360 rays are cast simultaneously at a single instant $t$. Because beam 0 ($0^\circ$) and beam 359 ($359^\circ$) meet directly in front of the robot (+X), any linear or angular motion during the scan caused RViz2 to project beam 359 at a different robot pose than beam 0, creating a visible seam/discontinuity directly in front of where the AMR faces.
+   - *Fix:* Set `scan.time_increment = 0.0`. Per ROS REP-117, when all measurements are captured at the same instant (as in simulation), `time_increment` must be 0.0. This eliminates the seam completely.
+10. **RViz2 `Use Fixed Frame: false` Point Cloud Swaying & Rotation:**
+    - *Cause:* `amr_view.rviz` had `Use Fixed Frame: false` for the LaserScan display. With this setting, RViz2 re-transforms the scan points on every render frame using the newest `lidar_link` TF rather than the timestamp of the scan. When turning or accelerating/decelerating, the points were dragged along with the robot's movement, causing the blue line to sway and float off the wall.
+    - *Fix:* Set `Use Fixed Frame: true` in `amr_view.rviz`. RViz2 now projects the points into `odom` at the scan timestamp, anchoring the laser points permanently to the obstacle wall.
 
 ---
 

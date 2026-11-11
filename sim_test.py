@@ -35,7 +35,7 @@ LIDAR_ANGLE_MAX    = 2.0 * math.pi  # radians – scan end angle
 LIDAR_ANGLE_INC    = (2.0 * math.pi) / LIDAR_NUM_BEAMS  # radians per beam
 LIDAR_RANGE_MIN    = 0.12       # metres – LDS-01 minimum reliable detection range
 LIDAR_RANGE_MAX    = 3.50       # metres – LDS-01 maximum detection range
-LIDAR_SCAN_HZ      = 10.0       # Hz – scan publication rate
+LIDAR_SCAN_HZ      = 20.0       # Hz – scan publication rate (upgraded to 20Hz for fluid tracking)
 # Height of the lidar_beam site above the floor, used to anchor each ray origin
 LIDAR_MOUNT_X      = 0.05       # metres forward from chassis centre (matches XML)
 LIDAR_MOUNT_Z      = 0.09       # metres above chassis centre (matches XML)
@@ -350,7 +350,7 @@ class AMRSimNode(Node):
         scan.angle_min       = LIDAR_ANGLE_MIN
         scan.angle_max       = LIDAR_ANGLE_MAX - LIDAR_ANGLE_INC  # last sample (no wrap-around)
         scan.angle_increment = LIDAR_ANGLE_INC
-        scan.time_increment  = (1.0 / LIDAR_SCAN_HZ) / LIDAR_NUM_BEAMS
+        scan.time_increment  = 0.0  # Instantaneous scan in simulation (REP-117; eliminates rolling-shutter seams)
         scan.scan_time       = 1.0 / LIDAR_SCAN_HZ
         scan.range_min       = LIDAR_RANGE_MIN
         scan.range_max       = LIDAR_RANGE_MAX
@@ -453,25 +453,24 @@ def main():
 
             step_counter += 1
 
-            # Sync viewer, broadcast TF, Odometry, and 3D Visual Markers at ~50Hz (every 10 physics steps)
-            if step_counter % 10 == 0:
+            # Sync viewer, broadcast TF, Odometry, and 3D Visual Markers at ~100Hz (every 5 physics steps)
+            if step_counter % 5 == 0:
                 now_msg = node.get_clock().now().to_msg()
                 viewer.sync()
                 node.publish_transforms(now_msg, data.qpos)
                 node.publish_odometry(now_msg, data.qpos, data.qvel)
-                # Upgraded marker publication to 50Hz (was 20Hz) for fluid, jitter-free 3D robot motion
                 node.marker_pub.publish(node.create_robot_markers(now_msg))
 
-            # Publish full 360-beam LaserScan at LIDAR_SCAN_HZ (10 Hz, every 50 steps)
+            # Publish full 360-beam LaserScan at LIDAR_SCAN_HZ (20 Hz, every 25 steps)
             if step_counter % scan_publish_interval == 0:
                 now_msg = node.get_clock().now().to_msg()
                 scan_msg = node.synthesize_laserscan(model, data, lidar_body_id, now_msg)
                 node.scan_pub.publish(scan_msg)
 
-            # High-efficiency display-rate real-time pacing (~50 Hz)
-            # Batching sleep to the 10-step sync boundary eliminates 500 OS sleep syscalls/sec,
+            # High-efficiency display-rate real-time pacing (~100 Hz)
+            # Batching sleep to the 5-step sync boundary eliminates 500 OS sleep syscalls/sec,
             # avoiding timer jitter and keeping simulation locked 1:1 with wall-clock time.
-            if step_counter % 10 == 0:
+            if step_counter % 5 == 0:
                 target_wall_time = wall_start_time + step_counter * dt
                 now = time.time()
                 sleep_time = target_wall_time - now
