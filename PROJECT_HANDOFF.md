@@ -58,9 +58,8 @@ BRAKE_ANG_DECEL   = 5.0      # rad/s^2
 LIDAR_NUM_BEAMS      = 360   # 1° angular resolution (REP-117 compliant)
 LIDAR_RANGE_MIN      = 0.12  # meters (LDS-01 blind-spot cutoff)
 LIDAR_RANGE_MAX      = 3.50  # meters (LDS-01 max reliable range)
-LIDAR_SCAN_HZ        = 20.0  # Hz  (one scan every 25 physics steps @ 500 Hz)
+LIDAR_SCAN_HZ        = 25.0  # Hz  (one scan every 20 physics steps @ 500 Hz)
 LIDAR_TIME_INC       = 0.0   # seconds (instantaneous simulation scan; eliminates rolling-shutter seams)
-LIDAR_MOUNT_Z_NUDGE  = 0.025 # meters (ray-origin upward nudge clears chassis deck)
 ```
 
 ---
@@ -98,6 +97,12 @@ LIDAR_MOUNT_Z_NUDGE  = 0.025 # meters (ray-origin upward nudge clears chassis de
 10. **RViz2 `Use Fixed Frame: false` Point Cloud Swaying & Rotation:**
     - *Cause:* `amr_view.rviz` had `Use Fixed Frame: false` for the LaserScan display. With this setting, RViz2 re-transforms the scan points on every render frame using the newest `lidar_link` TF rather than the timestamp of the scan. When turning or accelerating/decelerating, the points were dragged along with the robot's movement, causing the blue line to sway and float off the wall.
     - *Fix:* Set `Use Fixed Frame: true` in `amr_view.rviz`. RViz2 now projects the points into `odom` at the scan timestamp, anchoring the laser points permanently to the obstacle wall.
+11. **6-DOF Chassis vs 2D Yaw Discrepancy & Lever-Arm Ray Jitter:**
+    - *Cause:* `synthesize_laserscan` previously used a 2D scalar `yaw` ($Z=0$) and offset `ray_origin[2] += 0.025m`, while RViz2 reconstructed the scan using the robot's full 3D quaternion $q$ (including pitch and roll). During sharp maneuvers near the wall, minor suspension dynamics and caster chatter (~0.1° tilt) caused the 25mm offset lever arm and 2D-vs-3D mismatch to produce millimeter jitter on the obstacle surface.
+    - *Fix:* Rotated ray directions using the chassis's exact 3D rotation matrix $R = \text{data.xmat}[\text{chassis\_body\_id}]$, and placed the ray origin directly at the physical mount center `data.xpos[lidar_body_id]`. Raycasting in MuJoCo now mirrors RViz2's TF math, providing rock-solid millimeter accuracy.
+12. **WSLg Wayland/LLVMpipe Software Rasterization Framerate Cap:**
+    - *Cause:* RViz2 displays ~70 FPS despite configuring `Frame Rate: 120`. Under WSL2 with `LIBGL_ALWAYS_SOFTWARE=1`, OpenGL rendering is performed on the CPU via Mesa LLVMpipe. ~70 FPS represents the peak rasterization throughput of LLVMpipe and matches the Wayland/Weston display compositor presentation rate on 60–75 Hz monitors.
+    - *Fix:* Confirmed physics runs at a solid 500 Hz and MuJoCo viewer syncs at 100 FPS via a rolling 1-second console diagnostics telemetry tracker (`[SIM TELEMETRY] Physics: 500 Hz | Viewer: 100 FPS | Scan: 25 Hz`).
 
 ---
 

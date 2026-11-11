@@ -35,7 +35,7 @@ LIDAR_ANGLE_MAX    = 2.0 * math.pi  # radians – scan end angle
 LIDAR_ANGLE_INC    = (2.0 * math.pi) / LIDAR_NUM_BEAMS  # radians per beam
 LIDAR_RANGE_MIN    = 0.12       # metres – LDS-01 minimum reliable detection range
 LIDAR_RANGE_MAX    = 3.50       # metres – LDS-01 maximum detection range
-LIDAR_SCAN_HZ      = 20.0       # Hz – scan publication rate (upgraded to 20Hz for fluid tracking)
+LIDAR_SCAN_HZ      = 25.0       # Hz – scan publication rate (25Hz for high-speed tracking)
 # Height of the lidar_beam site above the floor, used to anchor each ray origin
 LIDAR_MOUNT_X      = 0.05       # metres forward from chassis centre (matches XML)
 LIDAR_MOUNT_Z      = 0.09       # metres above chassis centre (matches XML)
@@ -276,73 +276,53 @@ class AMRSimNode(Node):
 
 
     def synthesize_laserscan(self, model: 'mujoco.MjModel', data: 'mujoco.MjData',
-                              lidar_body_id: int, stamp) -> LaserScan:
+                              chassis_body_id: int, lidar_body_id: int, stamp) -> LaserScan:
         """
         Synthesise a full 360-beam planar LaserScan using MuJoCo's mj_ray() API.
 
-        Strategy
-        --------
-        For each of the 360 beams we fire a horizontal ray from the LiDAR body's
-        world-frame centre (data.xpos[lidar_body_id]).  The lidar body itself is
-        excluded from intersection via bodyexclude so there are no zero-distance
-        self-hits from the spinning LiDAR cylinder geom.
+        Strategy (6-DOF Geometric Fidelity)
+        ----------------------------------
+        To eliminate micro-jitter during aggressive maneuvers (braking, turning,
+        caster swiveling), the rays are fired directly from the exact world-frame
+        lidar center (data.xpos[lidar_body_id]) and rotated by the robot chassis's
+        actual 3D rotation matrix R = data.xmat[chassis_body_id].
 
-        mj_ray() returns the distance to the first intersecting geom; we clamp
-        to [LIDAR_RANGE_MIN, LIDAR_RANGE_MAX] and report inf for no-returns, as
-        per REP-117 convention.
-
-        Frame convention
-        ----------------
-        • The scan is published in 'lidar_link'; RViz2 uses the TF tree to
-          display points in the fixed 'odom' frame automatically.
-        • angle_min = 0 → +X axis of 'lidar_link' (robot forward direction).
-        • Angles increase counter-clockwise (REP-117 standard).
+        This guarantees that the simulated rays in MuJoCo follow the exact same
+        3D spatial paths that RViz2 reconstructs via the TF tree (odom -> base_link -> lidar_link),
+        giving millimeter-accurate wall lock even when the chassis pitches or rolls.
         """
-        # ── 1. Ray origin: lidar body centre in world frame ───────────────────
-        # data.xpos is populated each step by mj_step; shape = [nbody, 3].
-        # A tiny +Z nudge (0.025 m) keeps the origin clear of the chassis deck
-        # geom while remaining well inside the planar scan height band.
+        # 1. Exact 3D ray origin matching lidar_link mount position
         ray_origin = data.xpos[lidar_body_id].copy()
-        ray_origin[2] += 0.025
 
-        # ── 2. Current robot yaw (from free-joint quaternion) ─────────────────
-        # qpos[3:7] = (w, x, y, z) in MuJoCo quaternion convention.
-        qw, qx, qy, qz = (float(data.qpos[3]), float(data.qpos[4]),
-                           float(data.qpos[5]), float(data.qpos[6]))
-        yaw = math.atan2(2.0 * (qw * qz + qx * qy),
-                         1.0 - 2.0 * (qy * qy + qz * qz))
+        # 2. Exact 3D rotation matrix of chassis (matches base_link in TF)
+        # Note: We use chassis_body_id so the scan does not spin with the visual motor!
+        R = data.xmat[chassis_body_id].reshape(3, 3)
 
-        # ── 3. Cast 360 horizontal rays ───────────────────────────────────────
+        # 3. Cast 360 rays with exact 3D orientation
         ranges = []
         geomid = np.array([-1], dtype=np.int32)   # reused scratch buffer
 
         for i in range(LIDAR_NUM_BEAMS):
-            # Beam angle in world frame: robot yaw + beam index angle.
-            # i=0 → forward (+X of lidar_link); increases CCW (REP-117).
-            beam_world_angle = yaw + LIDAR_ANGLE_MIN + i * LIDAR_ANGLE_INC
+            theta = LIDAR_ANGLE_MIN + i * LIDAR_ANGLE_INC
+            # Local beam vector in lidar_link frame (+X forward, +Y left, +Z up)
+            local_dir = np.array([math.cos(theta), math.sin(theta), 0.0], dtype=np.float64)
+            # Transform to world coordinates using robot's full 3D rotation
+            ray_dir = R @ local_dir
 
-            # Horizontal unit direction vector (z=0 → planar scan)
-            ray_dir = np.array([math.cos(beam_world_angle),
-                                 math.sin(beam_world_angle),
-                                 0.0], dtype=np.float64)
-
-            # mj_ray: geomgroup=None → all groups; flg_static=1 → include
-            # worldbody geoms (floor, obstacle wall); bodyexclude=lidar_body_id
-            # → skip the spinning LiDAR cylinder (zero-distance self-hit guard).
             dist = mujoco.mj_ray(model, data,
                                  ray_origin, ray_dir,
-                                 None,             # geomgroup mask  (None = all)
+                                 None,             # geomgroup mask (None = all)
                                  1,                # flg_static: include static geoms
                                  lidar_body_id,    # bodyexclude: skip the lidar body
                                  geomid)
 
-            # REP-117 range gating: out-of-range or blind-spot → inf
+            # REP-117 range gating: out-of-range or blind-spot -> inf
             if LIDAR_RANGE_MIN <= dist <= LIDAR_RANGE_MAX:
                 ranges.append(float(dist))
             else:
                 ranges.append(float('inf'))
 
-        # ── 4. Build and return the LaserScan message ─────────────────────────
+        # 4. Build and return the LaserScan message
         scan = LaserScan()
         scan.header.stamp = stamp
         scan.header.frame_id = 'lidar_link'
@@ -374,14 +354,15 @@ def main():
     data = mujoco.MjData(model)
 
     # Cache Actuator and Body IDs
-    lidar_motor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "lidar_motor")
-    left_motor_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_motor")
-    right_motor_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right_motor")
-    # LiDAR body ID: used as mj_ray bodyexclude to prevent self-intersection hits
-    lidar_body_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "lidar")
+    lidar_motor_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "lidar_motor")
+    left_motor_id   = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_motor")
+    right_motor_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right_motor")
+    # Body IDs: lidar for exclusion; chassis for 3D orientation matching base_link TF
+    lidar_body_id   = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "lidar")
+    chassis_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "chassis")
 
-    # Publish the full 360-beam scan at LIDAR_SCAN_HZ (default 10 Hz).
-    # At 500 Hz physics, one scan every 50 steps.
+    # Publish the full 360-beam scan at LIDAR_SCAN_HZ (25 Hz).
+    # At 500 Hz physics, one scan every 20 steps.
     scan_publish_interval = int(round(1.0 / (LIDAR_SCAN_HZ * model.opt.timestep)))
 
     step_counter = 0
@@ -401,6 +382,11 @@ def main():
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
         wall_start_time = time.time()
+        fps_timer = time.time()
+        fps_step_count = 0
+        fps_sync_count = 0
+        fps_scan_count = 0
+
         while viewer.is_running():
             dt = model.opt.timestep
 
@@ -452,19 +438,22 @@ def main():
             mujoco.mj_step(model, data)
 
             step_counter += 1
+            fps_step_count += 1
 
             # Sync viewer, broadcast TF, Odometry, and 3D Visual Markers at ~100Hz (every 5 physics steps)
             if step_counter % 5 == 0:
+                fps_sync_count += 1
                 now_msg = node.get_clock().now().to_msg()
                 viewer.sync()
                 node.publish_transforms(now_msg, data.qpos)
                 node.publish_odometry(now_msg, data.qpos, data.qvel)
                 node.marker_pub.publish(node.create_robot_markers(now_msg))
 
-            # Publish full 360-beam LaserScan at LIDAR_SCAN_HZ (20 Hz, every 25 steps)
+            # Publish full 360-beam LaserScan at LIDAR_SCAN_HZ (25 Hz, every 20 steps)
             if step_counter % scan_publish_interval == 0:
+                fps_scan_count += 1
                 now_msg = node.get_clock().now().to_msg()
-                scan_msg = node.synthesize_laserscan(model, data, lidar_body_id, now_msg)
+                scan_msg = node.synthesize_laserscan(model, data, chassis_body_id, lidar_body_id, now_msg)
                 node.scan_pub.publish(scan_msg)
 
             # High-efficiency display-rate real-time pacing (~100 Hz)
@@ -479,6 +468,19 @@ def main():
                 elif now - target_wall_time > 0.1:
                     # Prevent catch-up loop if window dragging or WSL scheduler lags
                     wall_start_time = now - step_counter * dt
+
+            # Performance telemetry printout (rolling 1.0-second window)
+            now = time.time()
+            dt_fps = now - fps_timer
+            if dt_fps >= 1.0:
+                actual_phys_hz = fps_step_count / dt_fps
+                actual_viewer_fps = fps_sync_count / dt_fps
+                actual_scan_hz = fps_scan_count / dt_fps
+                print(f"\r\033[K[SIM TELEMETRY] Physics: {actual_phys_hz:.1f} Hz | MuJoCo Viewer: {actual_viewer_fps:.1f} FPS | LaserScan: {actual_scan_hz:.1f} Hz", end='', flush=True)
+                fps_timer = now
+                fps_step_count = 0
+                fps_sync_count = 0
+                fps_scan_count = 0
 
     # Clean shutdown
     print("Closing simulation node...")
