@@ -35,7 +35,7 @@ LIDAR_ANGLE_MAX    = 2.0 * math.pi  # radians – scan end angle
 LIDAR_ANGLE_INC    = (2.0 * math.pi) / LIDAR_NUM_BEAMS  # radians per beam
 LIDAR_RANGE_MIN    = 0.12       # metres – LDS-01 minimum reliable detection range
 LIDAR_RANGE_MAX    = 3.50       # metres – LDS-01 maximum detection range
-LIDAR_SCAN_HZ      = 25.0       # Hz – scan publication rate (25Hz for high-speed tracking)
+LIDAR_SCAN_HZ      = 20.0       # Hz – scan publication rate (stable 20Hz)
 # Height of the lidar_beam site above the floor, used to anchor each ray origin
 LIDAR_MOUNT_X      = 0.05       # metres forward from chassis centre (matches XML)
 LIDAR_MOUNT_Z      = 0.09       # metres above chassis centre (matches XML)
@@ -440,8 +440,8 @@ def main():
             step_counter += 1
             fps_step_count += 1
 
-            # Sync viewer, broadcast TF, Odometry, and 3D Visual Markers at ~100Hz (every 5 physics steps)
-            if step_counter % 5 == 0:
+            # Sync viewer, broadcast TF, Odometry, and 3D Visual Markers at ~62.5Hz (every 8 physics steps)
+            if step_counter % 8 == 0:
                 fps_sync_count += 1
                 now_msg = node.get_clock().now().to_msg()
                 viewer.sync()
@@ -449,17 +449,16 @@ def main():
                 node.publish_odometry(now_msg, data.qpos, data.qvel)
                 node.marker_pub.publish(node.create_robot_markers(now_msg))
 
-            # Publish full 360-beam LaserScan at LIDAR_SCAN_HZ (25 Hz, every 20 steps)
+            # Publish full 360-beam LaserScan at LIDAR_SCAN_HZ (20 Hz, every 25 steps)
             if step_counter % scan_publish_interval == 0:
                 fps_scan_count += 1
                 now_msg = node.get_clock().now().to_msg()
                 scan_msg = node.synthesize_laserscan(model, data, chassis_body_id, lidar_body_id, now_msg)
                 node.scan_pub.publish(scan_msg)
 
-            # High-efficiency display-rate real-time pacing (~100 Hz)
-            # Batching sleep to the 5-step sync boundary eliminates 500 OS sleep syscalls/sec,
-            # avoiding timer jitter and keeping simulation locked 1:1 with wall-clock time.
-            if step_counter % 5 == 0:
+            # High-efficiency display-rate real-time pacing (~62.5 Hz, matches 60-70 FPS displays)
+            # Batching sleep to the 8-step sync boundary eliminates timer jitter without GPU/CPU overload.
+            if step_counter % 8 == 0:
                 target_wall_time = wall_start_time + step_counter * dt
                 now = time.time()
                 sleep_time = target_wall_time - now

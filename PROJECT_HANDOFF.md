@@ -39,7 +39,7 @@
 WHEEL_RADIUS      = 0.0762   # meters (6-inch diameter drive wheels)
 WHEEL_BASE        = 0.36     # meters (distance between left & right wheel centerlines)
 PHYSICS_STEP_DT   = 0.002    # seconds (500 Hz simulation rate)
-VIEWER_SYNC_RATE  = 100      # Hz (synced to 100 FPS for ultra-fluid rendering)
+VIEWER_SYNC_RATE  = 62.5     # Hz (paced at 62.5 FPS / 8 steps, rock-solid on 60-75 Hz displays)
 
 # Actuator & Contact Dynamics
 MOTOR_KV          = 3.0      # Velocity feedback damping gain
@@ -58,7 +58,7 @@ BRAKE_ANG_DECEL   = 5.0      # rad/s^2
 LIDAR_NUM_BEAMS      = 360   # 1° angular resolution (REP-117 compliant)
 LIDAR_RANGE_MIN      = 0.12  # meters (LDS-01 blind-spot cutoff)
 LIDAR_RANGE_MAX      = 3.50  # meters (LDS-01 max reliable range)
-LIDAR_SCAN_HZ        = 25.0  # Hz  (one scan every 20 physics steps @ 500 Hz)
+LIDAR_SCAN_HZ        = 20.0  # Hz  (one scan every 25 physics steps @ 500 Hz)
 LIDAR_TIME_INC       = 0.0   # seconds (instantaneous simulation scan; eliminates rolling-shutter seams)
 ```
 
